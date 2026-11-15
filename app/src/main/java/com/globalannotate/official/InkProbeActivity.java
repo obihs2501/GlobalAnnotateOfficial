@@ -73,8 +73,14 @@ public final class InkProbeActivity extends Activity {
 
     static final String TAG = "GAInk";
 
-    /** PenTypeValue.BALLPOINT in Mi Canvas. 1=INK_PEN, 2=BALLPOINT, 3=PENCIL, 4=MARK, 10=WATER_COLOR. */
-    private static final int PEN_TYPE_BALLPOINT = 2;
+    /**
+     * PenTypeValue.INK_PEN in Mi Canvas (1=INK_PEN, 2=BALLPOINT, 3=PENCIL,
+     * 4=MARK, 10=WATER_COLOR). INK_PEN is chosen because its per-point width is
+     * pressure-dependent (see curveParam); BALLPOINT (2) and MARK (4) use a
+     * constant width for the whole stroke, so they would not show the pressure
+     * data travelling through the engine.
+     */
+    private static final int PEN_TYPE_INK = 1;
 
     private GLSurfaceView glView;
     private InkRenderer renderer;
@@ -327,6 +333,8 @@ public final class InkProbeActivity extends Activity {
         /**
          * Builds one curved stroke, 240 points, pressure 2000..9000 (the engine
          * stores pressure as short = percent * 100, like Mi Curves' Java side).
+         * With penType INK_PEN this pressure sweep shows up directly as the
+         * per-point stamp width, so the rendered stroke thins out at both ends.
          * dataStatus MUST be 1: GenerateVertexBuffer skips any point whose
          * dataStatus != 1.
          */
@@ -377,13 +385,20 @@ public final class InkProbeActivity extends Activity {
          *   +0x10 float clipTop          (array[5])
          *   +0x14 float clipRight        (array[6])
          *   +0x18 float clipBottom       (array[7])
-         *   +0x1c float penShape         (array[8], pressure exponent)
+         *   +0x1c float penShape         (array[8], pressure exponent for INK_PEN)
          *   +0x20 float reserved         (array[9], unused by vertex generation)
          *   +0x24 bool  uniformPenSize   (only if array.length >= 11, array[10] != 0)
+         *
+         * For penType 1 (INK_PEN) GenerateVertexBuffer computes the per-point
+         * width as widthScale * (penSize*0.96 * (pressure/100)^(1.34-penShape)
+         * + penSize*0.039), clamped to at least 0.8px: penSize setup at
+         * 0x30a18..0x30a68, per-point branch at 0x31508..0x31528. With
+         * penSize 26 and penShape 0.5 a pressure sweep of 0.2..1.0 therefore
+         * changes the stamp size from roughly 7px to 26px.
          */
         private float[] curveParam() {
             return new float[]{
-                    PEN_TYPE_BALLPOINT,   // penType
+                    PEN_TYPE_INK,         // penType
                     26.0f,                // penSizePx
                     1.0f,                 // widthScale
                     1.0f,                 // array[3]: screen ratio, ignored by native

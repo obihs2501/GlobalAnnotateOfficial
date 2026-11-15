@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.os.SystemClock;
 import android.util.Log;
 
 /**
@@ -56,6 +57,31 @@ public final class GestureLaunchReceiver extends BroadcastReceiver {
     private static final String KEY_SPLIT_MODE = "split_mode";
     private static final String KEY_MODULE_ENABLED = "module_enabled";
 
+    /** Logcat filter for pen-gesture accept/suppress decisions (device checks). */
+    private static final String GESTURE_LOG_TAG = "GAGesture";
+    /** The two gesture names that can be two reports of one physical squeeze. */
+    private static final String GESTURE_SQUEEZE = "SQUEEZE";
+    private static final String GESTURE_DOUBLE_TAP = "DOUBLE_TAP";
+    /**
+     * How long a gesture keeps the window in which its twins are dropped.
+     *
+     * <p>Slightly wider than the helper's own 320 ms double-tap state machine
+     * ({@code CompatProfile.DOUBLE_TAP_WINDOW_MS}): a single squeeze is
+     * broadcast as {@code SQUEEZE} only 320 ms after its key, while a
+     * {@code DOUBLE_TAP} for the same physical action can be broadcast
+     * immediately by the other hook (or by the ROM's own detector). The two
+     * therefore arrive up to one helper window plus broadcast latency apart.</p>
+     */
+    private static final long GESTURE_DEDUPE_WINDOW_MS = 400L;
+    /**
+     * Last gesture that was allowed through, in memory only (no persistence
+     * across process restarts). Broadcasts are normally delivered on the main
+     * thread, but the lock also covers a direct caller on another thread.
+     */
+    private static final Object GESTURE_DEDUPE_LOCK = new Object();
+    private static String lastGestureName;
+    private static long lastGestureAtMs;
+
     @Override
     public void onReceive(Context context, Intent intent) {
         if (context == null || intent == null) {
@@ -100,10 +126,21 @@ public final class GestureLaunchReceiver extends BroadcastReceiver {
      * {@code if (!active) setActive(true) else applyGesture()}. While it is up
      * the gesture goes to the service: SQUEEZE and DOUBLE_TAP toggle the arc
      * palette, the same action the official build maps to pen keys 194/195.
+     *
+     * <p>Duplicates are dropped here, before either branch, so one physical
+     * action can neither run twice nor summon the overlay and then also run an
+     * action. The helper hooks several key-policy entries and a ROM may report
+     * one squeeze both as its squeeze key and as its double-tap key; the same
+     * name arriving twice is the same physical action. The protocol carries no
+     * pen / device id, so the gesture kind is the whole key today; were one
+     * added, it would join the key in {@link #acceptGesture}.</p>
      */
     private static void onGesture(Context context, String name) {
         if (name == null || name.isEmpty()) {
             Log.w(TAG, "gesture without a name ignored");
+            return;
+        }
+        if (!acceptGesture(name)) {
             return;
         }
         if (FloatingService.isRunning()) {
@@ -113,6 +150,58 @@ public final class GestureLaunchReceiver extends BroadcastReceiver {
         }
         Log.i(TAG, "gesture " + name + " summons the overlay");
         startOverlay(context);
+    }
+
+    /**
+     * Collapses the several reports one physical pen action can produce.
+     *
+     * <p>The comparison is always against the last <em>accepted</em> gesture,
+     * not the last received one: a suppressed twin must not push the window
+     * forward, or a steady stream of duplicates would extend the suppression
+     * forever. A gesture is dropped when it arrives inside
+     * {@link #GESTURE_DEDUPE_WINDOW_MS} and either</p>
+     * <ul>
+     *   <li>has the same kind as the accepted one (two hook entries, two
+     *       broadcasts), or</li>
+     *   <li>is the other half of the squeeze / double-tap pair: one squeeze
+     *       must not run both the squeeze action and the tap action, in either
+     *       arrival order.</li>
+     * </ul>
+     *
+     * <p>Anything else (for example a slide after a squeeze, or two genuine
+     * gestures more than the window apart) is accepted normally, and a real
+     * double-tap produces one DOUBLE_TAP broadcast, which passes once.</p>
+     *
+     * @return true when the caller should act on this gesture
+     */
+    private static boolean acceptGesture(String name) {
+        final long now = SystemClock.uptimeMillis();
+        synchronized (GESTURE_DEDUPE_LOCK) {
+            final long elapsed = now - lastGestureAtMs;
+            if (lastGestureName != null && elapsed >= 0L
+                    && elapsed <= GESTURE_DEDUPE_WINDOW_MS) {
+                if (lastGestureName.equals(name)) {
+                    Log.i(GESTURE_LOG_TAG, "suppressed duplicate " + name
+                            + " (" + elapsed + "ms after " + lastGestureName + ")");
+                    return false;
+                }
+                if (isSqueezeTapPair(lastGestureName, name)) {
+                    Log.i(GESTURE_LOG_TAG, "suppressed " + name + " (" + elapsed
+                            + "ms after " + lastGestureName + "): one physical pen action");
+                    return false;
+                }
+            }
+            lastGestureName = name;
+            lastGestureAtMs = now;
+            Log.i(GESTURE_LOG_TAG, "accepted " + name);
+            return true;
+        }
+    }
+
+    /** True when the two names are the squeeze / double-tap pair, either order. */
+    private static boolean isSqueezeTapPair(String first, String second) {
+        return (GESTURE_SQUEEZE.equals(first) && GESTURE_DOUBLE_TAP.equals(second))
+                || (GESTURE_DOUBLE_TAP.equals(first) && GESTURE_SQUEEZE.equals(second));
     }
 
     private static void toggleOverlay(Context context) {

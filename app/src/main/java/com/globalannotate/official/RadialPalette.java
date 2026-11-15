@@ -80,14 +80,47 @@ import android.view.View;
  * official square's centre and the default pivot of the official scale
  * animation.
  *
+ * <p><b>The colour button, as drawn by the official picker.</b> Its view is
+ * {@code color_button_uni_size} 44dp ({@code p016I1IllI.lIIIlll} reads the
+ * dimens in its constructor and forces that measurement in {@code onMeasure},
+ * overriding the 40dp layout params of {@code lIi11II1ill/lIIIlll.java
+ * m28168I11lii()}). The wheel is a sweep of
+ * {@code penpicker_palette_sweep_1..8} rotated -90 degrees, composed
+ * {@code SRC_OVER} with a radial {@code penpicker_palette_radial_center/_edge}
+ * whose stops are {0, 0.88} ({@code p016I1IllI/l1IIii.java mo1092lIil11}).
+ * When the selected tool is an INK pen with a colour,
+ * {@code lIi11II1ill/ll111i.java m28204I1llI1()} calls {@code setCheck(true)}
+ * and the view draws the wheel, then a {@code penpicker_background_color} disc
+ * at 0.8125r and finally the pen's colour at 0.65r
+ * ({@code p016I1IllI/lIIIlll.java onDraw}); for every other tool it calls
+ * {@code setCheck(false)} and {@code setEnabled(false)}, which leaves the full
+ * wheel visible but not clickable. This port dims that disabled wheel to the
+ * official {@code getDisableIconAlpha()} 76 instead, and reproduces the
+ * checked ring so the INK pen's own colour is visible on the button.
+ *
+ * <p><b>Hit testing.</b> Mi Canvas places the brushes and buttons as real
+ * children and lets Android dispatch by each child's rotated bounds
+ * ({@code lIi11II1ill/ll111i.java} is a ViewGroup; the only explicit geometry
+ * test in the picker is the annulus-plus-angle
+ * {@code p167IlI1iIi/I11IIil.java m9260l1IIii}). The PRD asks this single-view
+ * port for a nearest-item-centre pick instead of a first-containing-rect, so
+ * {@link #hitTest} compares the squared distance to every item centre: buttons
+ * on the 192dp ring, brushes at the middle of the 101..246dp box they sweep.
+ * Inside the tool band the nearest centre always wins; outside it an item is
+ * only taken when the point is within that item's own reach, which keeps the
+ * brush handles below the 160dp inner edge live. The white button sector below
+ * the single divider stays inert, exactly like the official container, which
+ * consumes those taps in {@code lIi11II1ill/l1IIii.java dispatchTouchEvent}.
+ *
  * <p><b>Drawing order.</b> Band, five brushes, divider, then the four buttons.
  * Mi Canvas marks the button container with elevation 10, which puts its white
  * sector, divider and controls above the brushes; this port keeps those on top
  * but leaves the band itself as the only background, so all five brushes stay
  * visible. The official blurred shadow (a {@code BlurMaskFilter} bitmap in
- * {@code lIi11II1ill.II11lli}) and the elevation shadow are not reproduced:
- * they need a software layer, and the PRD does not require them. Icons are
- * drawn as paths because this file may not use resources or XML.
+ * {@code p067IIiiIiiI/lI1lill1.java m28108I11lii}) and the elevation shadow are
+ * not reproduced: they need a software layer, and the PRD does not require
+ * them. Icons are drawn as paths because this file may not use resources or
+ * XML.
  *
  * <p>All methods must be called on the UI thread. The view is transparent
  * outside the band and expects to be added match-parent by the host; it never
@@ -144,6 +177,22 @@ public final class RadialPalette extends View {
     private static final float DIVIDER_OUTER_DP = 214f;
     private static final float DIVIDER_WIDTH_DP = 1f;
 
+    /**
+     * Radial midpoint of the box a brush sweeps as it protrudes. The artwork's
+     * tip top edge is anchored on the 246dp ring and moves 22dp inward when
+     * unselected; the 123dp box therefore covers radius 246 body-end-down to
+     * 246 - 22 - 123 = 101dp, and its centre is at 173.5dp. This is the
+     * "item centre" the PRD's nearest-centre hit test measures against.
+     */
+    private static final float BRUSH_HIT_CENTER_DP =
+            (ARC_OUTERMOST_DP + (ARC_OUTERMOST_DP - TOOL_INSET_DP - TOOL_HEIGHT_DP)) / 2f;
+    /** Half the radial span of that swept box. */
+    private static final float BRUSH_HIT_HALF_DP =
+            (ARC_OUTERMOST_DP - (ARC_OUTERMOST_DP - TOOL_INSET_DP - TOOL_HEIGHT_DP)) / 2f;
+    /** Circumscribed radius of the 48dp x 145dp swept brush box. */
+    private static final float BRUSH_HIT_RADIUS_DP =
+            (float) Math.hypot(BRUSH_HIT_HALF_DP, TOOL_WIDTH_DP / 2f);
+
     // ----angles (logical degrees)
 
     private static final float START_ANGLE = 82f;
@@ -195,6 +244,11 @@ public final class RadialPalette extends View {
     /** penpicker_palette_radial_center / _edge. */
     private static final int WHEEL_CENTER_COLOR = 0xFFE4E4E4;
     private static final int WHEEL_EDGE_COLOR = 0x00E4E4E4;
+    /** p016I1IllI/l1IIii.java: the radial stops are {0, 0.88}. */
+    private static final float[] WHEEL_RADIAL_POSITIONS = {0f, 0.88f};
+    /** p016I1IllI/lIIIlll.java onDraw: checked ring hole and colour dot. */
+    private static final float WHEEL_HOLE_SCALE = 0.8125f;
+    private static final float WHEEL_DOT_SCALE = 0.65f;
 
     // ----hit targets
 
@@ -205,6 +259,14 @@ public final class RadialPalette extends View {
     private static final int ACTION_REDO = 4;
     private static final int ACTION_COLOR = 5;
     private static final int ACTION_MORE = 6;
+
+    /** The four buttons in the official angle order (lIi11II1ill/ll111i.java). */
+    private static final int[] BUTTON_ACTIONS = {
+            ACTION_UNDO, ACTION_REDO, ACTION_COLOR, ACTION_MORE,
+    };
+    private static final float[] BUTTON_ANGLES = {
+            UNDO_ANGLE, REDO_ANGLE, COLOR_ANGLE, MORE_ANGLE,
+    };
 
     // ----state
 
@@ -396,9 +458,11 @@ public final class RadialPalette extends View {
 
     /**
      * The annular sector plus its two round caps, exactly the construction in
-     * {@code lIi11II1ill.II11lli.lIIIlll(Il1illl)}: centre, outer arc, back
-     * along the inner arc, then union circles of radius (outer-inner)/2 at the
-     * middle ring. The caps are drawn as separate circles by the caller.
+     * {@code lIi11II1ill/l1IIii.java m28145I11lii()} (and in
+     * {@code p067IIiiIiiI/lI1lill1.java lIIIlll(Il1illl)} for the undo/redo
+     * sectors): centre, outer arc, back along the inner arc, then union
+     * circles of radius (outer-inner)/2 at the middle ring. The caps are drawn
+     * as separate circles by the caller.
      */
     private void buildBandPath(Path path) {
         path.reset();
@@ -549,20 +613,32 @@ public final class RadialPalette extends View {
 
     private void drawColorWheel(Canvas canvas, float bx, float by, float angle) {
         final boolean enabled = selectedStyle == Types.PenStyle.INK_PEN;
-        final int baseAlpha = enabled ? 255 : DISABLED_ALPHA;
-
-        wheelPaint.setShader(colorWheelShader);
-        wheelPaint.setAlpha(Math.round(baseAlpha * openProgress));
+        final float radius = dp(COLOR_WHEEL_DP / 2f);
 
         final int save = canvas.save();
         canvas.translate(bx, by);
         // Rotate the wheel with the arc, as the official button container
         // rotates its children (lIIIlll.m28166I1i1l).
         canvas.rotate(90f - angle);
-        canvas.drawCircle(0f, 0f, dp(COLOR_WHEEL_DP / 2f), wheelPaint);
-        canvas.restoreToCount(save);
 
+        wheelPaint.setShader(colorWheelShader);
+        wheelPaint.setAlpha(Math.round((enabled ? 255 : DISABLED_ALPHA) * openProgress));
+        canvas.drawCircle(0f, 0f, radius, wheelPaint);
         wheelPaint.setShader(null);
+
+        if (enabled) {
+            // Official checked state (p016I1IllI/lIIIlll.java onDraw): the
+            // 44dp wheel ring, a penpicker_background_color hole at 0.8125r,
+            // then the pen's colour at 0.65r. ll111i.m28204I1llI1 sets the
+            // colour from the selected INK tool.
+            wheelPaint.setAlpha(Math.round(255f * openProgress));
+            wheelPaint.setColor(BAND_COLOR);
+            canvas.drawCircle(0f, 0f, radius * WHEEL_HOLE_SCALE, wheelPaint);
+            wheelPaint.setColor(toolColors[Types.PenStyle.INK_PEN.ordinal()]);
+            canvas.drawCircle(0f, 0f, radius * WHEEL_DOT_SCALE, wheelPaint);
+        }
+
+        canvas.restoreToCount(save);
     }
 
     // ----tool drawables
@@ -591,7 +667,9 @@ public final class RadialPalette extends View {
         sweep.setLocalMatrix(rotate);
         RadialGradient radial = new RadialGradient(0f, 0f,
                 dp(COLOR_WHEEL_DP / 2f),
-                WHEEL_CENTER_COLOR, WHEEL_EDGE_COLOR, Shader.TileMode.CLAMP);
+                new int[]{WHEEL_CENTER_COLOR, WHEEL_EDGE_COLOR},
+                WHEEL_RADIAL_POSITIONS,
+                Shader.TileMode.CLAMP);
         return new ComposeShader(sweep, radial, PorterDuff.Mode.SRC_OVER);
     }
 
@@ -769,11 +847,27 @@ public final class RadialPalette extends View {
     }
 
     /**
-     * Sets {@link #hitKind} and {@link #hitStyle}. Buttons are tested first by
-     * their real 2D distance on the 192dp ring; the rest of the band then uses
-     * angular nearest-neighbour, as the PRD requires. Everything outside the
-     * 160..246dp annulus between -42 and 82 degrees dismisses; the button
-     * sector below the divider is inert like the official container.
+     * Sets {@link #hitKind} and {@link #hitStyle}.
+     *
+     * <p>The PRD asks for the nearest item centre, not the first containing
+     * rectangle. The centres are built exactly where the official picker puts
+     * the items: the four buttons on the 192dp middle ring
+     * ({@code lIi11II1ill/l1IIii.java m28141I11IIil} /
+     * {@code m28143IiII1IlI} with {@code lI1l(middleRadius, angle)}), and each
+     * brush at the midpoint of the box it sweeps when it protrudes
+     * ({@code lIi11II1ill/ll111i.java m28200IIiIIiii1} anchors the 123dp box
+     * tip on the 246dp ring, then {@code p129Iill/II11I.java m7439liiIl1i}
+     * translates it 22dp inward when it is not the active tool).
+     *
+     * <p>Inside the tool part of the band the nearest centre always wins.
+     * Outside it, an item is only taken when the point lies within that item's
+     * own reach: the 40dp button box, the 44dp wheel, or the circumscribed
+     * circle of the 48dp x 145dp box a brush sweeps. That second rule keeps a
+     * brush's handle below the 160dp inner edge tappable, which is where the
+     * official brush view extends. The white button sector below the single
+     * divider is inert, exactly like the official container, which consumes
+     * those taps in {@code l1IIii.dispatchTouchEvent}; everything else
+     * dismisses.
      */
     private void hitTest(float x, float y) {
         hitKind = ACTION_DISMISS;
@@ -790,62 +884,89 @@ public final class RadialPalette extends View {
         final float px = cx + (x - cx) / scale;
         final float py = cy + (y - cy) / scale;
 
-        if (withinButton(px, py, UNDO_ANGLE, dp(BUTTON_BOX_DP / 2f))) {
-            hitKind = ACTION_UNDO;
-            return;
+        int nearestKind = ACTION_NONE;
+        Types.PenStyle nearestStyle = null;
+        float nearestDistance = Float.MAX_VALUE;
+
+        int gatedKind = ACTION_NONE;
+        Types.PenStyle gatedStyle = null;
+        float gatedDistance = Float.MAX_VALUE;
+
+        int gatedButtonKind = ACTION_NONE;
+        float gatedButtonDistance = Float.MAX_VALUE;
+
+        for (int i = 0; i < BUTTON_ACTIONS.length; i++) {
+            final float bx = screenX(ARC_MIDDLE_DP, BUTTON_ANGLES[i]);
+            final float by = screenY(ARC_MIDDLE_DP, BUTTON_ANGLES[i]);
+            final float dx = px - bx;
+            final float dy = py - by;
+            final float distance = dx * dx + dy * dy;
+            final float gate = dp(BUTTON_ACTIONS[i] == ACTION_COLOR
+                    ? COLOR_WHEEL_DP / 2f : BUTTON_BOX_DP / 2f);
+
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestKind = BUTTON_ACTIONS[i];
+                nearestStyle = null;
+            }
+            if (distance <= gate * gate) {
+                if (distance < gatedDistance) {
+                    gatedDistance = distance;
+                    gatedKind = BUTTON_ACTIONS[i];
+                    gatedStyle = null;
+                }
+                if (distance < gatedButtonDistance) {
+                    gatedButtonDistance = distance;
+                    gatedButtonKind = BUTTON_ACTIONS[i];
+                }
+            }
         }
-        if (withinButton(px, py, REDO_ANGLE, dp(BUTTON_BOX_DP / 2f))) {
-            hitKind = ACTION_REDO;
-            return;
-        }
-        if (withinButton(px, py, COLOR_ANGLE, dp(COLOR_WHEEL_DP / 2f))) {
-            hitKind = ACTION_COLOR;
-            return;
-        }
-        if (withinButton(px, py, MORE_ANGLE, dp(BUTTON_BOX_DP / 2f))) {
-            hitKind = ACTION_MORE;
-            return;
+
+        for (int i = 0; i < TOOLS.length; i++) {
+            final float bx = screenX(BRUSH_HIT_CENTER_DP, TOOL_ANGLES[i]);
+            final float by = screenY(BRUSH_HIT_CENTER_DP, TOOL_ANGLES[i]);
+            final float dx = px - bx;
+            final float dy = py - by;
+            final float distance = dx * dx + dy * dy;
+            final float gate = dp(BRUSH_HIT_RADIUS_DP);
+
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestKind = ACTION_BRUSH;
+                nearestStyle = TOOLS[i];
+            }
+            if (distance <= gate * gate && distance < gatedDistance) {
+                gatedDistance = distance;
+                gatedKind = ACTION_BRUSH;
+                gatedStyle = TOOLS[i];
+            }
         }
 
         final float dx = px - cx;
         final float dy = py - cy;
         final float radius = (float) Math.hypot(dx, dy);
-        if (radius < dp(ARC_INNER_DP) || radius > dp(ARC_OUTERMOST_DP)) {
+        final float theta = normalizeAngle((float) -Math.toDegrees(Math.atan2(dy, dx)));
+
+        final boolean inButtonSector = radius >= dp(ARC_INNER_DP)
+                && radius <= dp(ARC_OUTER_DP)
+                && theta < DIVIDER_ANGLE && theta >= END_ANGLE;
+        if (inButtonSector) {
+            // The official container consumes taps that miss its children, so
+            // a brush circle may not leak into this sector.
+            hitKind = gatedButtonKind;
             return;
         }
-
-        float theta = (float) -Math.toDegrees(Math.atan2(dy, dx));
-        theta = normalizeAngle(theta);
-        if (theta > START_ANGLE || theta < END_ANGLE) {
+        if (radius >= dp(ARC_INNER_DP) && radius <= dp(ARC_OUTERMOST_DP)
+                && theta <= START_ANGLE && theta >= DIVIDER_ANGLE
+                && nearestKind != ACTION_NONE) {
+            hitKind = nearestKind;
+            hitStyle = nearestStyle;
             return;
         }
-        if (theta < DIVIDER_ANGLE) {
-            // Inside the official elevated button sector: no brush there.
-            hitKind = ACTION_NONE;
-            return;
+        if (gatedKind != ACTION_NONE) {
+            hitKind = gatedKind;
+            hitStyle = gatedStyle;
         }
-
-        float bestDistance = Float.MAX_VALUE;
-        Types.PenStyle bestStyle = null;
-        for (int i = 0; i < TOOLS.length; i++) {
-            final float distance = Math.abs(theta - TOOL_ANGLES[i]);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                bestStyle = TOOLS[i];
-            }
-        }
-        if (bestStyle != null) {
-            hitKind = ACTION_BRUSH;
-            hitStyle = bestStyle;
-        }
-    }
-
-    private boolean withinButton(float x, float y, float angle, float radius) {
-        final float bx = screenX(ARC_MIDDLE_DP, angle);
-        final float by = screenY(ARC_MIDDLE_DP, angle);
-        final float dx = x - bx;
-        final float dy = y - by;
-        return dx * dx + dy * dy <= radius * radius;
     }
 
     // ----math helpers

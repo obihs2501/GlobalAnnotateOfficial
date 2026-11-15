@@ -11,6 +11,7 @@ import android.view.MotionEvent;
 import android.view.View;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 
 /**
  * Full-screen ink canvas for the overlay.
@@ -18,12 +19,18 @@ import java.util.ArrayList;
  * <p>Strokes are kept as point streams and replayed on every frame. The view is
  * software rendered so the eraser can use {@link PorterDuff.Mode#CLEAR}: an
  * eraser stroke is just another stroke in the list and erases everything drawn
- * before it. Undo/redo simply move strokes between two lists.</p>
+ * before it. Undo/redo move whole edits (a drawn stroke, or a set of strokes
+ * removed by clear / the whole-stroke eraser) between two stacks.</p>
  */
 public final class AnnotationView extends View {
 
     /** One finished or in-flight stroke. Points are stored x, y, pressure. */
     private static final class Stroke {
+        /**
+         * Creation order. The stroke list is kept sorted by it, so a removed
+         * stroke can be put back at exactly its old z-order position.
+         */
+        final long seq;
         final Types.PenStyle style;
         final int color;
         final float baseWidth;
@@ -33,8 +40,9 @@ public final class AnnotationView extends View {
         final boolean stylus;
         final ArrayList<float[]> points = new ArrayList<>();
 
-        Stroke(Types.PenStyle style, int color, float baseWidth, int alpha,
+        Stroke(long seq, Types.PenStyle style, int color, float baseWidth, int alpha,
                boolean eraser, boolean stylus) {
+            this.seq = seq;
             this.style = style;
             this.color = color;
             this.baseWidth = baseWidth;
@@ -48,8 +56,38 @@ public final class AnnotationView extends View {
         }
     }
 
+    /**
+     * One undoable edit: either a stroke that was drawn, or a set of strokes
+     * that were removed together (clear, whole-stroke eraser). Removed strokes
+     * are kept as objects, so undo can restore them with their old points,
+     * style and z-order.
+     */
+    private static final class Edit {
+        /** The stroke this edit drew; null for a removal. */
+        final Stroke drawn;
+        /** The strokes this edit removed; null for a draw. */
+        final ArrayList<Stroke> removed;
+
+        private Edit(Stroke drawn, ArrayList<Stroke> removed) {
+            this.drawn = drawn;
+            this.removed = removed;
+        }
+
+        static Edit draw(Stroke stroke) {
+            return new Edit(stroke, null);
+        }
+
+        static Edit removal(ArrayList<Stroke> strokes) {
+            return new Edit(null, strokes);
+        }
+    }
+
     private final ArrayList<Stroke> strokes = new ArrayList<>();
-    private final ArrayList<Stroke> redoStack = new ArrayList<>();
+    /** Committed edits, oldest first; undo() takes the last one. */
+    private final ArrayList<Edit> undoStack = new ArrayList<>();
+    /** Undone edits, oldest first; redo() takes the last one. */
+    private final ArrayList<Edit> redoStack = new ArrayList<>();
+    private long nextStrokeSeq = 1L;
 
     private final Paint inkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint erasePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -65,10 +103,10 @@ public final class AnnotationView extends View {
 
     private Stroke active;
     private int activePointerId = MotionEvent.INVALID_POINTER_ID;
-    /** Strokes removed by the last clear(), restorable as one undo action. */
-    private ArrayList<Stroke> clearedSnapshot;
-    /** A redo that should re-apply the clear it undid. */
-    private boolean clearRedoPending;
+    /** Whole-stroke eraser (笔画橡皮) instead of the raster eraser stroke. */
+    private boolean strokeEraseEnabled;
+    /** In-flight whole-stroke erase gesture; null when not erasing strokes. */
+    private Edit activeErase;
 
     public AnnotationView(Context context) {
         super(context);
@@ -121,6 +159,23 @@ public final class AnnotationView extends View {
         fingerDrawEnabled = enabled;
     }
 
+    /**
+     * Switches the ERASER tool between the raster eraser (a CLEAR stroke, the
+     * default) and the whole-stroke eraser (笔画橡皮). A whole-stroke erase
+     * gesture removes every ink stroke it touches; the whole gesture is one
+     * undoable action, like a clear.
+     */
+    public void setStrokeEraseEnabled(boolean enabled) {
+        strokeEraseEnabled = enabled;
+        if (!enabled) {
+            finishActive();
+        }
+    }
+
+    public boolean isStrokeEraseEnabled() {
+        return strokeEraseEnabled;
+    }
+
     public Types.PenStyle penStyle() {
         return penStyle;
     }
@@ -134,57 +189,85 @@ public final class AnnotationView extends View {
     }
 
     public boolean canUndo() {
-        return !strokes.isEmpty() || clearedSnapshot != null;
+        return !undoStack.isEmpty() || active != null
+                || (activeErase != null && !activeErase.removed.isEmpty());
     }
 
     public boolean canRedo() {
-        return !redoStack.isEmpty() || clearRedoPending;
+        return !redoStack.isEmpty();
     }
 
     public void undo() {
         finishActive();
-        if (clearedSnapshot != null) {
-            // One clear is one undoable action: bring every stroke back.
-            strokes.addAll(clearedSnapshot);
-            clearedSnapshot = null;
-            clearRedoPending = true;
-            invalidate();
+        if (undoStack.isEmpty()) {
             return;
         }
-        if (strokes.isEmpty()) {
-            return;
+        final Edit edit = undoStack.remove(undoStack.size() - 1);
+        if (edit.drawn != null) {
+            strokes.remove(edit.drawn);
+        } else {
+            for (int i = 0; i < edit.removed.size(); i++) {
+                insertBySeq(edit.removed.get(i));
+            }
         }
-        // Undoing past the clear means the clear is no longer the next redo.
-        clearRedoPending = false;
-        redoStack.add(strokes.remove(strokes.size() - 1));
+        redoStack.add(edit);
         invalidate();
     }
 
     public void redo() {
         finishActive();
-        if (clearRedoPending) {
-            clearedSnapshot = new ArrayList<>(strokes);
-            strokes.clear();
-            clearRedoPending = false;
-            invalidate();
-            return;
-        }
         if (redoStack.isEmpty()) {
             return;
         }
-        strokes.add(redoStack.remove(redoStack.size() - 1));
+        final Edit edit = redoStack.remove(redoStack.size() - 1);
+        if (edit.drawn != null) {
+            insertBySeq(edit.drawn);
+        } else {
+            for (int i = 0; i < edit.removed.size(); i++) {
+                strokes.remove(edit.removed.get(i));
+            }
+        }
+        undoStack.add(edit);
         invalidate();
     }
 
     public void clear() {
-        active = null;
+        // A stroke still under the finger is a real edit; commit it first so
+        // undoing the clear also brings it back.
+        finishActive();
         activePointerId = MotionEvent.INVALID_POINTER_ID;
-        // Clearing is undoable: keep the removed strokes as one action.
-        clearedSnapshot = strokes.isEmpty() ? null : new ArrayList<>(strokes);
-        clearRedoPending = false;
+        if (strokes.isEmpty()) {
+            // Nothing to clear is not an edit; keep the redo branch intact.
+            invalidate();
+            return;
+        }
+        final ArrayList<Stroke> removed = new ArrayList<>(strokes);
         strokes.clear();
-        redoStack.clear();
+        pruneRedoFor(removed);
+        undoStack.add(Edit.removal(removed));
+        // A removal is undoable on its own and does not clear the whole redo
+        // branch; only entries that touch the removed strokes become stale.
         invalidate();
+    }
+
+    /**
+     * Strokes always stay sorted by creation order. New ink is appended, so
+     * only a restored stroke needs to be slotted back in, which preserves the
+     * original z-order (and the way CLEAR eraser strokes cut through ink).
+     * A draw edit and a removal edit can reference the same stroke (a redo
+     * branch survives removals), so never insert it twice.
+     */
+    private void insertBySeq(Stroke stroke) {
+        for (int i = strokes.size() - 1; i >= 0; i--) {
+            if (strokes.get(i) == stroke) {
+                return;
+            }
+        }
+        int index = strokes.size();
+        while (index > 0 && strokes.get(index - 1).seq > stroke.seq) {
+            index--;
+        }
+        strokes.add(index, stroke);
     }
 
     /**
@@ -204,15 +287,39 @@ public final class AnnotationView extends View {
         }
         final float sx = (float) w / (float) oldw;
         final float sy = (float) h / (float) oldh;
+        // A stroke can be referenced by more than one edit (a redo branch
+        // survives removals), so scale each object exactly once.
+        final IdentityHashMap<Stroke, Boolean> scaled = new IdentityHashMap<>();
         for (int i = 0; i < strokes.size(); i++) {
-            scaleStroke(strokes.get(i), sx, sy);
+            final Stroke stroke = strokes.get(i);
+            scaleStroke(stroke, sx, sy);
+            scaled.put(stroke, Boolean.TRUE);
+        }
+        for (int i = 0; i < undoStack.size(); i++) {
+            scaleEdit(undoStack.get(i), sx, sy, scaled);
         }
         for (int i = 0; i < redoStack.size(); i++) {
-            scaleStroke(redoStack.get(i), sx, sy);
+            scaleEdit(redoStack.get(i), sx, sy, scaled);
         }
-        if (clearedSnapshot != null) {
-            for (int i = 0; i < clearedSnapshot.size(); i++) {
-                scaleStroke(clearedSnapshot.get(i), sx, sy);
+        if (activeErase != null) {
+            // Hits of an in-flight whole-stroke erase are not committed yet.
+            scaleEdit(activeErase, sx, sy, scaled);
+        }
+    }
+
+    private static void scaleEdit(Edit edit, float sx, float sy,
+                                  IdentityHashMap<Stroke, Boolean> scaled) {
+        if (edit.drawn != null && !scaled.containsKey(edit.drawn)) {
+            scaleStroke(edit.drawn, sx, sy);
+            scaled.put(edit.drawn, Boolean.TRUE);
+        }
+        if (edit.removed != null) {
+            for (int i = 0; i < edit.removed.size(); i++) {
+                final Stroke stroke = edit.removed.get(i);
+                if (!scaled.containsKey(stroke)) {
+                    scaleStroke(stroke, sx, sy);
+                    scaled.put(stroke, Boolean.TRUE);
+                }
             }
         }
     }
@@ -245,6 +352,11 @@ public final class AnnotationView extends View {
                 return true;
             }
             activePointerId = event.getPointerId(0);
+            if (strokeEraseEnabled && penStyle.eraser) {
+                beginStrokeErase(event, 0);
+                invalidate();
+                return true;
+            }
             beginStroke(event, 0);
             invalidate();
             return true;
@@ -257,7 +369,19 @@ public final class AnnotationView extends View {
 
         if (action == MotionEvent.ACTION_MOVE) {
             final int index = event.findPointerIndex(activePointerId);
-            if (index < 0 || active == null) {
+            if (index < 0) {
+                return true;
+            }
+            if (activeErase != null) {
+                for (int h = 0; h < event.getHistorySize(); h++) {
+                    eraseStrokesAt(event.getHistoricalX(index, h),
+                            event.getHistoricalY(index, h));
+                }
+                eraseStrokesAt(event.getX(index), event.getY(index));
+                invalidate();
+                return true;
+            }
+            if (active == null) {
                 return true;
             }
             for (int h = 0; h < event.getHistorySize(); h++) {
@@ -271,7 +395,11 @@ public final class AnnotationView extends View {
         if (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP) {
             final int index = event.getActionIndex();
             if (event.getPointerId(index) == activePointerId) {
-                appendPoint(event, index, -1);
+                if (activeErase != null) {
+                    eraseStrokesAt(event.getX(index), event.getY(index));
+                } else {
+                    appendPoint(event, index, -1);
+                }
                 finishActive();
                 activePointerId = MotionEvent.INVALID_POINTER_ID;
                 invalidate();
@@ -289,18 +417,109 @@ public final class AnnotationView extends View {
         return true;
     }
 
+    /**
+     * A removal must not wipe the whole redo branch, but a redo entry that
+     * removes a stroke this removal just deleted has become a no-op and would
+     * break the undo order if replayed. Drop just those entries (and an entry
+     * that loses all of its strokes). Draw entries never overlap a removal:
+     * an undone draw's stroke is not on the canvas, so nothing can remove it.
+     */
+    private void pruneRedoFor(ArrayList<Stroke> removed) {
+        for (int e = redoStack.size() - 1; e >= 0; e--) {
+            final Edit edit = redoStack.get(e);
+            if (edit.removed == null) {
+                continue;
+            }
+            for (int s = edit.removed.size() - 1; s >= 0; s--) {
+                if (removed.contains(edit.removed.get(s))) {
+                    edit.removed.remove(s);
+                }
+            }
+            if (edit.removed.isEmpty()) {
+                redoStack.remove(e);
+            }
+        }
+    }
+
     private void beginStroke(MotionEvent event, int index) {
         final Types.PenStyle style = penStyle;
         final boolean eraser = style.eraser;
         final boolean stylus = event.getToolType(index) == MotionEvent.TOOL_TYPE_STYLUS;
-        active = new Stroke(style, penColor, penWidth, penAlpha, eraser, stylus);
+        active = new Stroke(nextStrokeSeq++, style, penColor, penWidth, penAlpha,
+                eraser, stylus);
         active.add(event.getX(index), event.getY(index), event.getPressure(index));
         strokes.add(active);
-        // Any new stroke invalidates the redo branch, including a redo of a
-        // clear that was undone.
+        // A new stroke is a genuinely new edit and invalidates the redo branch.
         redoStack.clear();
-        clearedSnapshot = null;
-        clearRedoPending = false;
+    }
+
+    private void beginStrokeErase(MotionEvent event, int index) {
+        active = null;
+        activeErase = Edit.removal(new ArrayList<Stroke>());
+        eraseStrokesAt(event.getX(index), event.getY(index));
+    }
+
+    /**
+     * Whole-stroke eraser hit test. Every ink stroke within the eraser disc is
+     * removed immediately for live feedback and recorded in the in-flight
+     * removal edit, so the entire drag is undone in one step.
+     */
+    private void eraseStrokesAt(float x, float y) {
+        if (activeErase == null) {
+            return;
+        }
+        // The raster eraser draws baseWidth * widthFactor as a diameter, and
+        // FloatingService treats the panel value as a radius.
+        final float eraserRadius =
+                penWidth * widthFactor(Types.PenStyle.ERASER) * 0.5f;
+        for (int i = strokes.size() - 1; i >= 0; i--) {
+            final Stroke stroke = strokes.get(i);
+            // CLEAR strokes are eraser marks, not ink; they stay in history so
+            // an undone erase still cuts the ink the same way it did before.
+            if (stroke.eraser) {
+                continue;
+            }
+            final float hitRadius = eraserRadius
+                    + stroke.baseWidth * widthFactor(stroke.style) * 0.5f;
+            if (!strokeHit(stroke, x, y, hitRadius)) {
+                continue;
+            }
+            strokes.remove(i);
+            activeErase.removed.add(stroke);
+        }
+    }
+
+    private static boolean strokeHit(Stroke stroke, float x, float y, float radius) {
+        final int count = stroke.points.size();
+        if (count == 0) {
+            return false;
+        }
+        final float radiusSq = radius * radius;
+        if (count == 1) {
+            final float[] point = stroke.points.get(0);
+            final float dx = point[0] - x;
+            final float dy = point[1] - y;
+            return dx * dx + dy * dy <= radiusSq;
+        }
+        float[] previous = stroke.points.get(0);
+        for (int i = 1; i < count; i++) {
+            final float[] point = stroke.points.get(i);
+            final float abx = point[0] - previous[0];
+            final float aby = point[1] - previous[1];
+            final float lengthSq = abx * abx + aby * aby;
+            float t = 0f;
+            if (lengthSq > 0f) {
+                t = ((x - previous[0]) * abx + (y - previous[1]) * aby) / lengthSq;
+                t = Math.max(0f, Math.min(1f, t));
+            }
+            final float dx = x - (previous[0] + t * abx);
+            final float dy = y - (previous[1] + t * aby);
+            if (dx * dx + dy * dy <= radiusSq) {
+                return true;
+            }
+            previous = point;
+        }
+        return false;
     }
 
     private void appendPoint(MotionEvent event, int pointerIndex, int historyIndex) {
@@ -318,9 +537,19 @@ public final class AnnotationView extends View {
     }
 
     private void finishActive() {
-        // A one-point stroke is a dot and stays in the list; there is nothing
-        // else to commit because strokes are drawn from the point list.
-        active = null;
+        if (active != null) {
+            // A one-point stroke is a dot and stays in the list; there is
+            // nothing else to commit because strokes are drawn from the list.
+            undoStack.add(Edit.draw(active));
+            active = null;
+        }
+        if (activeErase != null) {
+            if (!activeErase.removed.isEmpty()) {
+                pruneRedoFor(activeErase.removed);
+                undoStack.add(activeErase);
+            }
+            activeErase = null;
+        }
     }
 
     // ------------------------------------------------------------------

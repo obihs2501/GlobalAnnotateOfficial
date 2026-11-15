@@ -131,7 +131,6 @@ public final class FloatingService extends Service {
     private static final long LONG_SCROLL_SETTLE_MS = 900L;
     /** The overlap strip is taken at a stable fractional height. */
     private static final int LONG_STRIP_HEIGHT = 48;
-    private static final float LONG_MIN_SCROLL_FRACTION = 0.18f;
     private static final float LONG_MAX_SCROLL_FRACTION = 0.60f;
     private static final float LONG_MATCH_TOLERANCE = 24f;
     /** Pending export modes (what the consent result should resume). */
@@ -180,7 +179,9 @@ public final class FloatingService extends Service {
             pendingExportInk = null;
             exportJob = false;
             exportCompleting = false;
+            cancelLongScreenshotWorker();
             setOverlayVisible(true);
+            cancelLongProgressToast();
             Toast.makeText(FloatingService.this, R.string.ga_capture_denied,
                     Toast.LENGTH_SHORT).show();
         }
@@ -214,10 +215,14 @@ public final class FloatingService extends Service {
      * read from export workers, hence volatile.
      */
     private volatile ScreenCaptureSession captureSession;
-    /** Whether the foreground service currently carries the mediaProjection type. */
-    private boolean captureForegroundType;
     /** Root was refused once in this run; do not pay its timeout on every save. */
     private volatile boolean rootCaptureFailed;
+    /** True only while a MediaProjection frame request is active. */
+    private boolean projectionCapturePending;
+    /** Root swipe process for long screenshot; killed during cancellation. */
+    private volatile Process longSwipeProcess;
+    /** Reused progress toast, so per-screen updates replace rather than queue. */
+    private Toast longProgressToast;
     /** The consent activity is showing; its result arrives via onStartCommand. */
     private volatile boolean captureConsentPending;
     /** Consent was refused; do not ask again until the service restarts. */
@@ -226,8 +231,8 @@ public final class FloatingService extends Service {
     private int pendingExportMode = EXPORT_NONE;
     /** Ink layer retained while the root/MediaProjection capture is in flight. */
     private volatile Bitmap pendingExportInk;
-    /** Reused progress toast, so per-screen updates replace rather than queue. */
-    private Toast longProgressToast;
+    /** Current long-screenshot worker, interrupted when the service is stopped. */
+    private volatile HandlerThread pendingLongWorker;
 
     private float grabDx;
     private float grabDy;
@@ -494,24 +499,13 @@ public final class FloatingService extends Service {
             type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
         } else {
             startForeground(NOTIFICATION_ID, buildNotification());
-            captureForegroundType = false;
             return true;
         }
         try {
             ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(), type);
-            captureForegroundType = projectionType;
             return true;
         } catch (RuntimeException error) {
             Log.w(TAG, "startForeground failed for type=" + type, error);
-            if (projectionType) {
-                try {
-                    startForeground(NOTIFICATION_ID, buildNotification());
-                    captureForegroundType = false;
-                } catch (RuntimeException ignored) {
-                    return false;
-                }
-                return false;
-            }
             return false;
         }
     }
@@ -561,7 +555,8 @@ public final class FloatingService extends Service {
                                 if (captureSession == sessionRef[0]) {
                                     captureSession = null;
                                 }
-                                if (exportJob && !exportCompleting) {
+                                if (exportJob && projectionCapturePending && !exportCompleting) {
+                                    projectionCapturePending = false;
                                     finishPendingExport(null);
                                 }
                             }
@@ -611,6 +606,9 @@ public final class FloatingService extends Service {
         mainHandler.removeCallbacks(consentTimeout);
         exportJob = false;
         exportCompleting = false;
+        projectionCapturePending = false;
+        cancelLongScreenshotWorker();
+        cancelLongProgressToast();
         final ScreenCaptureSession projection = captureSession;
         captureSession = null;
         if (projection != null) {
@@ -1714,7 +1712,6 @@ public final class FloatingService extends Service {
         exportCompleting = false;
         pendingExportMode = EXPORT_LONG;
         pendingExportInk = ink;
-        Toast.makeText(this, R.string.ga_export_running, Toast.LENGTH_SHORT).show();
         setOverlayVisible(false);
         mainHandler.postDelayed(new Runnable() {
             @Override
@@ -1734,7 +1731,9 @@ public final class FloatingService extends Service {
         final int height = screenH;
         final Bitmap ink = pendingExportInk;
         pendingExportInk = null;
+        cancelLongProgressToast();
         final HandlerThread worker = new HandlerThread("ga-long-screenshot");
+        pendingLongWorker = worker;
         worker.start();
         new Handler(worker.getLooper()).post(new Runnable() {
             @Override
@@ -1744,6 +1743,9 @@ public final class FloatingService extends Service {
                 Bitmap stitched = null;
                 Bitmap result = null;
                 try {
+                    if (!exportJob || pendingExportMode != EXPORT_LONG) {
+                        return;
+                    }
                     first = captureScreenRoot();
                     if (first == null) {
                         rootCaptureFailed = true;
@@ -1752,6 +1754,9 @@ public final class FloatingService extends Service {
                     rootCaptureFailed = false;
                     final int frameWidth = first.getWidth();
                     final int frameHeight = first.getHeight();
+                    if (frameWidth != width || frameHeight != height) {
+                        throw new IOException("screen rotated during long screenshot");
+                    }
                     if (frameWidth <= 0 || frameHeight <= 0) {
                         throw new IOException("invalid initial frame size");
                     }
@@ -1774,6 +1779,9 @@ public final class FloatingService extends Service {
                     int capturedScreens = 1;
                     boolean partial = false;
                     while (capturedScreens < MAX_LONG_SCREENS && contentHeight < maxHeight) {
+                        if (!exportJob || Thread.currentThread().isInterrupted()) {
+                            return;
+                        }
                         if (!rootSwipeUp(frameWidth / 2, Math.round(frameHeight * 0.78f),
                                 Math.round(frameHeight * 0.22f), (int) LONG_SCROLL_MS)) {
                             partial = true;
@@ -1784,6 +1792,11 @@ public final class FloatingService extends Service {
                         if (current == null) {
                             partial = true;
                             break;
+                        }
+                        if (!exportJob || pendingExportMode != EXPORT_LONG
+                                || Thread.currentThread().isInterrupted()) {
+                            recycleQuietly(current);
+                            return;
                         }
                         if (current.getWidth() != frameWidth || current.getHeight() != frameHeight) {
                             recycleQuietly(current);
@@ -1814,10 +1827,16 @@ public final class FloatingService extends Service {
                         recycleQuietly(previous);
                         previous = current.copy(Bitmap.Config.RGB_565, false);
                         recycleQuietly(current);
-                        showLongProgress(capturedScreens);
                         if (allowed < appendHeight) {
                             break;
                         }
+                    }
+                    if (capturedScreens >= MAX_LONG_SCREENS || contentHeight >= MAX_LONG_HEIGHT) {
+                        partial = true;
+                    }
+                    if (!exportJob || pendingExportMode != EXPORT_LONG
+                            || Thread.currentThread().isInterrupted()) {
+                        return;
                     }
                     result = Bitmap.createBitmap(stitched, 0, 0, frameWidth, contentHeight);
                     final boolean savedPartial = partial;
@@ -1831,6 +1850,9 @@ public final class FloatingService extends Service {
                             worker.quitSafely();
                             exportJob = false;
                             exportCompleting = false;
+                            pendingLongWorker = null;
+                            longSwipeProcess = null;
+                            cancelLongProgressToast();
                             pendingExportMode = EXPORT_NONE;
                             setOverlayVisible(true);
                             int message = savedUri == null ? R.string.ga_export_failed
@@ -1842,6 +1864,23 @@ public final class FloatingService extends Service {
                     });
                 } catch (Exception error) {
                     Log.w(TAG, "long screenshot failed", error);
+                    mainHandler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            worker.quitSafely();
+                            if (rootCaptureFailed) {
+                                failLongScreenshot();
+                            } else {
+                                failLongScreenshot(R.string.ga_export_failed);
+                            }
+                        }
+                    });
+                } catch (OutOfMemoryError error) {
+                    Log.e(TAG, "long screenshot ran out of memory", error);
+                    first = null;
+                    previous = null;
+                    stitched = null;
+                    result = null;
                     mainHandler.post(new Runnable() {
                         @Override
                         public void run() {
@@ -1866,6 +1905,11 @@ public final class FloatingService extends Service {
                     + Math.max(0, fromY) + " " + Math.max(0, x) + " "
                     + Math.max(0, toY) + " " + Math.max(120, durationMs);
             process = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
+            longSwipeProcess = process;
+            if (!exportJob || pendingExportMode != EXPORT_LONG) {
+                process.destroyForcibly();
+                return false;
+            }
             if (!process.waitFor(5L, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 return false;
@@ -1879,6 +1923,10 @@ public final class FloatingService extends Service {
                 Thread.currentThread().interrupt();
             }
             return false;
+        } finally {
+            if (longSwipeProcess == process) {
+                longSwipeProcess = null;
+            }
         }
     }
 
@@ -1891,9 +1939,9 @@ public final class FloatingService extends Service {
         final int height = current.getHeight();
         final int strip = Math.min(LONG_STRIP_HEIGHT, Math.max(12, height / 12));
         final int previousTop = Math.max(0, Math.round(height * 0.68f) - strip / 2);
-        final int minY = Math.max(0, previousTop - Math.round(height * LONG_MAX_SCROLL_FRACTION));
-        final int maxY = Math.min(height - strip,
-                previousTop - Math.round(height * LONG_MIN_SCROLL_FRACTION));
+        final int minY = Math.max(0,
+                previousTop - Math.round(height * LONG_MAX_SCROLL_FRACTION));
+        final int maxY = Math.min(height - strip, previousTop + strip / 2);
         if (maxY < minY) {
             return -1;
         }
@@ -1901,6 +1949,7 @@ public final class FloatingService extends Service {
         final int stepY = Math.max(2, strip / 12);
         long bestError = Long.MAX_VALUE;
         int bestY = -1;
+        long secondBestError = Long.MAX_VALUE;
         int samples = 0;
         for (int y = minY; y <= maxY; y += stepY) {
             long error = 0L;
@@ -1915,21 +1964,52 @@ public final class FloatingService extends Service {
                     count++;
                 }
             }
-            if (count > 0 && error < bestError) {
-                bestError = error;
-                bestY = y;
-                samples = count;
+            if (count > 0) {
+                if (error < bestError) {
+                    secondBestError = bestError;
+                    bestError = error;
+                    bestY = y;
+                    samples = count;
+                } else if (error < secondBestError) {
+                    secondBestError = error;
+                }
             }
         }
         if (bestY < 0 || samples == 0) {
             return -1;
         }
         final float meanError = bestError / (float) samples;
-        if (meanError > LONG_MATCH_TOLERANCE) {
+        final float runnerUpError = secondBestError == Long.MAX_VALUE
+                ? Float.MAX_VALUE : secondBestError / (float) samples;
+        if (meanError > LONG_MATCH_TOLERANCE
+                || (runnerUpError - meanError) < 2f) {
             return -1;
         }
         final int scroll = previousTop - bestY;
-        return scroll > 0 ? height - scroll : 0;
+        if (scroll < 0) {
+            return -1;
+        }
+        return scroll == 0 ? 0 : height - scroll;
+    }
+
+    private void cancelLongScreenshotWorker() {
+        final HandlerThread worker = pendingLongWorker;
+        pendingLongWorker = null;
+        if (worker != null) {
+            worker.quitSafely();
+        }
+        final Process process = longSwipeProcess;
+        longSwipeProcess = null;
+        if (process != null) {
+            process.destroyForcibly();
+        }
+    }
+
+    private void cancelLongProgressToast() {
+        if (longProgressToast != null) {
+            longProgressToast.cancel();
+            longProgressToast = null;
+        }
     }
 
     private void showLongProgress(int screens) {
@@ -1948,13 +2028,19 @@ public final class FloatingService extends Service {
     }
 
     private void failLongScreenshot() {
+        failLongScreenshot(R.string.ga_long_root_needed);
+    }
+
+    private void failLongScreenshot(int message) {
         exportJob = false;
         exportCompleting = false;
+        cancelLongScreenshotWorker();
+        cancelLongProgressToast();
         pendingExportMode = EXPORT_NONE;
         recycleQuietly(pendingExportInk);
         pendingExportInk = null;
         setOverlayVisible(true);
-        Toast.makeText(this, R.string.ga_long_root_needed, Toast.LENGTH_LONG).show();
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
     }
 
     /** Starts a PNG/PDF export; root is a fast path and projection is the public fallback. */
@@ -1971,7 +2057,6 @@ public final class FloatingService extends Service {
         exportCompleting = false;
         pendingExportMode = pdf ? EXPORT_PDF : EXPORT_IMAGE;
         pendingExportInk = ink;
-        Toast.makeText(this, R.string.ga_export_running, Toast.LENGTH_SHORT).show();
 
         // Capture the ink before hiding the overlay. The screen itself is
         // captured only after the overlay windows have disappeared.
@@ -1991,7 +2076,8 @@ public final class FloatingService extends Service {
             return;
         }
         final ScreenCaptureSession session = captureSession;
-        if (rootCaptureFailed && session != null && !session.isStopped()) {
+        if (rootCaptureFailed && pendingExportMode != EXPORT_LONG
+                && session != null && !session.isStopped()) {
             captureWithProjection(session, pendingExportMode, pendingExportInk);
             return;
         }
@@ -2049,13 +2135,7 @@ public final class FloatingService extends Service {
             return;
         }
         captureConsentPending = true;
-        if (!ensureForeground(true)) {
-            captureConsentPending = false;
-            captureConsentRefused = true;
-            ensureForeground(false);
-            finishPendingExport(null);
-            return;
-        }
+        ensureForeground(false);
         try {
             Intent intent = new Intent(this, ScreenCapturePermissionActivity.class)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
@@ -2078,6 +2158,7 @@ public final class FloatingService extends Service {
             finishPendingExport(null);
             return;
         }
+        projectionCapturePending = true;
         setOverlayVisible(false);
         session.capture(screenW, screenH, getResources().getDisplayMetrics().densityDpi,
                 new Runnable() {
@@ -2094,12 +2175,14 @@ public final class FloatingService extends Service {
                             recycleQuietly(bitmap);
                             return;
                         }
+                        projectionCapturePending = false;
                         finishPendingExport(bitmap);
                     }
 
                     @Override
                     public void onError(String message) {
                         Log.w(TAG, "projection capture failed: " + message);
+                        projectionCapturePending = false;
                         finishPendingExport(null);
                     }
                 });

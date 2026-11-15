@@ -285,14 +285,23 @@ public final class ScreenCaptureSession {
     }
 
     private void onImage(ImageReader source) {
-        if (source != reader) {
-            final Image stale = source.acquireLatestImage();
-            if (stale != null) {
-                stale.close();
+        if (source != reader || released) {
+            try {
+                final Image stale = source.acquireLatestImage();
+                if (stale != null) {
+                    stale.close();
+                }
+            } catch (IllegalStateException ignored) {
+                // A late callback can race closing its old ImageReader.
             }
             return;
         }
-        final Image image = source.acquireLatestImage();
+        final Image image;
+        try {
+            image = source.acquireLatestImage();
+        } catch (IllegalStateException closed) {
+            return;
+        }
         if (image == null) {
             return;
         }

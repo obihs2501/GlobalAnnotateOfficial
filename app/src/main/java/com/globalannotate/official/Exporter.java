@@ -81,6 +81,7 @@ public final class Exporter {
         }
 
         Bitmap flattened = null;
+        boolean ownsFlattened = false;
         Uri uri = null;
         try {
             ContentResolver resolver = context.getContentResolver();

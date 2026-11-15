@@ -89,16 +89,16 @@ import android.widget.TextView;
 public final class BrushPanel extends LinearLayout {
 
     /**
-     * Mi Canvas brush set; minimums and defaults from PenStyle.kt:43-51. Every
-     * pen shares the user's 25-unit cap: the official pencil max is 6, ink 30,
-     * marker/water-colour 65, but anything beyond 25 units is unusable on this
-     * canvas, so 25 is the common ceiling (eraser included).
+     * Mi Canvas brush set; minimums and defaults from PenStyle.kt:43-51. Pens
+     * cap at the user's 25-unit ceiling (official pencil max is 6, ink 30);
+     * the marker is allowed 45 because a broad highlighter-like band is still
+     * useful. Water-colour stays at 25.
      */
     public enum Tool {
         BALLPOINT(1, 25, 6, "压力灵敏度", false),
         PENCIL(1, 25, 3, "倾斜角灵敏度", false),
         INK_PEN(1, 25, 15, "压力灵敏度", false),
-        MARKER(5, 25, 25, "压力灵敏度", false),
+        MARKER(5, 45, 25, "压力灵敏度", false),
         WATER_COLOR(5, 25, 25, "压力灵敏度", false),
         ERASER(4, 25, 6, "压力灵敏度", true);
 

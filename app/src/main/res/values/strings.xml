@@ -15,6 +15,8 @@
     <string name="ga_service_started">批注已启动</string>
     <string name="ga_service_stopped">批注已停止</string>
     <string name="ga_service_failed">无法启动批注服务</string>
+    <string name="ga_battery_button">允许后台运行（防止批注被系统冻结）</string>
+    <string name="ga_battery_missing">未找到电池优化设置界面</string>
     <string name="ga_more_hint">更多功能即将推出</string>
     <string name="ga_color_picker_hint">取色器即将推出</string>
     <string name="ga_export_running">正在保存…</string>

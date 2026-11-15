@@ -111,6 +111,21 @@ public final class MainActivity extends Activity {
         stopLp.topMargin = dp(10);
         root.addView(stop, stopLp);
 
+        // HyperOS freezes background apps aggressively; an overlay that dies
+        // when another app comes forward is useless, so offer the exemption.
+        Button battery = new Button(this);
+        battery.setText(R.string.ga_battery_button);
+        battery.setAllCaps(false);
+        battery.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openBatterySettings();
+            }
+        });
+        LinearLayout.LayoutParams batteryLp = matchWrap();
+        batteryLp.topMargin = dp(10);
+        root.addView(battery, batteryLp);
+
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.addView(root, new ScrollView.LayoutParams(
@@ -178,6 +193,26 @@ public final class MainActivity extends Activity {
             startActivity(intent);
         } catch (RuntimeException e) {
             startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION));
+        }
+    }
+
+    /**
+     * Opens the system's battery-optimisation exemption dialog. On HyperOS the
+     * same screen also exposes "后台运行" / autostart controls.
+     */
+    private void openBatterySettings() {
+        try {
+            final Intent intent = new Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (RuntimeException e) {
+            try {
+                startActivity(new Intent(
+                        Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            } catch (RuntimeException ignored) {
+                Toast.makeText(this, R.string.ga_battery_missing, Toast.LENGTH_SHORT).show();
+            }
         }
     }
 

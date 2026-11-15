@@ -24,6 +24,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Debug-only probe for the official Mi Canvas ink engine (libmicurve.so).
+             Not exported; started only by MainActivity when the launch Intent
+             carries extra probe="ink". No runtime behaviour of the annotation
+             overlay depends on it. -->
+        <activity
+            android:name=".InkProbeActivity"
+            android:exported="false" />
+
         <service
             android:name=".FloatingService"
             android:exported="false"

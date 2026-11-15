@@ -27,6 +27,15 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Debug-only hook for the official Mi Canvas ink engine probe; the
+        // normal launch path below is untouched. Trigger with:
+        //   adb shell am start -n com.globalannotate.official/.MainActivity -e probe ink
+        final Intent probeIntent = getIntent();
+        if (probeIntent != null && "ink".equals(probeIntent.getStringExtra("probe"))) {
+            startActivity(new Intent(this, InkProbeActivity.class));
+            finish();
+            return;
+        }
         if (needsNotificationPermission()) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},
                     REQ_NOTIFICATIONS);

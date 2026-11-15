@@ -29,8 +29,8 @@ import android.widget.FrameLayout;
  */
 public final class FloatingHost extends FrameLayout {
 
-    /** Official minimised-ball diameter, used only if the ball has no size yet. */
-    private static final float BALL_SIZE_DP = 96f;
+    /** Official resting ball diameter in MAXIMIZE, used only before the ball has a size. */
+    private static final float BALL_SIZE_DP = 108f;
 
     private final FrameLayout wrapper;
     private final CapsuleView capsule;

@@ -20,7 +20,7 @@ import com.globalannotate.official.R;
 
 /**
  * Direct Java port of Mi Canvas' minimized brush ball
- * ({@code p452lilii.II11I}, decompiled as {@code p452lilii.II11I}).
+ * ({@code p452lilii.II11I}; decompiled source {@code p452lilii/II11I.java}).
  *
  * <p>The resting ball is 108dp: Mi Canvas' {@code MinimizedBallView} field
  * defaults to 96dp, but the MAXIMIZE picker collapses to its capsule

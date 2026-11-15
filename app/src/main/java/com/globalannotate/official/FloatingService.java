@@ -112,6 +112,14 @@ public final class FloatingService extends Service {
             final int action = event.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN) {
                 proxyPinned = true;
+                // Remember where inside the ball the finger landed, before the
+                // drag threshold moves it. The proxy rect is the ball rect in
+                // the collapsed state.
+                if (!expanded && host != null) {
+                    final float half = host.ballSizePx() / 2f;
+                    grabDx = event.getX() - half;
+                    grabDy = event.getY() - half;
+                }
             }
             if (host != null && host.capsule() != null) {
                 host.capsule().dispatchTouchEvent(event);
@@ -272,6 +280,9 @@ public final class FloatingService extends Service {
         final float[] ball = loadBallCentre();
         capsule.enterBallMode(host.ballSizePx());
         host.showBallAt(ball[0], ball[1], host.ballSizePx());
+        // CapsuleView.ballGesture() checks the actual frame, so keep the
+        // capsule's params ball-sized for as long as it is collapsed.
+        host.setCapsuleSize(host.ballSizePx(), host.ballSizePx());
 
         // The host is pure visual output: it must never win a touch against the
         // canvas below or the proxy above, so it is NOT_TOUCHABLE. All picker
@@ -334,14 +345,6 @@ public final class FloatingService extends Service {
         final WindowManager.LayoutParams lp = overlayParams();
         lp.flags = BASE_OVERLAY_FLAGS | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
-        return lp;
-    }
-
-    private WindowManager.LayoutParams hostOverlayParams() {
-        final WindowManager.LayoutParams lp = overlayParams();
-        // The visual layer must never steal touches; the small proxy above it
-        // owns the picker gestures and ink goes to the canvas below.
-        lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         return lp;
     }
 
@@ -438,6 +441,12 @@ public final class FloatingService extends Service {
         }
 
         @Override
+        public void onCustomColor(int anchorX) {
+            Toast.makeText(FloatingService.this, R.string.ga_color_picker_hint,
+                    Toast.LENGTH_SHORT).show();
+        }
+
+        @Override
         public void onUndo() {
             annotationView.undo();
             refreshCapsule();
@@ -523,9 +532,7 @@ public final class FloatingService extends Service {
             capsuleDrag = false;
             afterCollapseDrag = false;
             expanded = false;
-            final float size = host.ballSizePx();
-            grabDx = viewX - size / 2f;
-            grabDy = viewY - size / 2f;
+            // grabDx/grabDy were captured on the proxy's DOWN event.
             host.ball().setBrush(penStyle, penColor);
         } else {
             ballDrag = false;
@@ -662,6 +669,7 @@ public final class FloatingService extends Service {
                 // From here on a touch on the ball must be a tap, not a capsule
                 // tool hit.
                 host.capsule().enterBallMode(host.ballSizePx());
+                host.setCapsuleSize(host.ballSizePx(), host.ballSizePx());
                 if (forCapsuleDrag) {
                     afterCollapseDrag = true;
                 }
@@ -703,6 +711,7 @@ public final class FloatingService extends Service {
         host.capsule().enterBallMode(host.ballSizePx());
         host.capsule().setCollapseProgress(1f);
         host.setCollapseProgress(1f);
+        host.setCapsuleSize(host.ballSizePx(), host.ballSizePx());
         host.captureScreenOrigin();
         morph.showBallAt(cx, cy, host.ballSizePx());
         saveBall(cx, cy);

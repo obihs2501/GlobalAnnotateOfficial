@@ -24,6 +24,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import com.globalannotate.official.R;
+
 /**
  * Standalone Java port of the old Kotlin {@code widget/BrushPanel.kt}
  * (Mi Canvas {@code penpicker_popup_layout_pen_set}). The old panel inflated

@@ -157,11 +157,19 @@ public final class FloatingMorph {
                 host.setBallCenter(frameCx, frameCy);
                 host.setWrapperTopLeft(wrapperLeft, wrapperTop);
 
-                final float p = 1f - clamp((q - EXPAND_SWAP) / (1f - EXPAND_SWAP), 0f, 1f);
+                // The hand-over frame must be the ball exactly: the first
+                // visible capsule frame is the p == 1 circle at the ball
+                // centre. Easing p from the raw q at the swap made the capsule
+                // appear already half-open (a 100px pop, official hands over at
+                // p == 1 and unfolds from the next frame on).
+                final boolean justSwitched = !switched[0] && q >= EXPAND_SWAP;
+                final float p = justSwitched
+                        ? 1f
+                        : 1f - clamp((q - EXPAND_SWAP) / (1f - EXPAND_SWAP), 0f, 1f);
                 host.setCollapseProgress(p);
 
                 if (q >= EXPAND_SWAP) {
-                    if (!switched[0]) {
+                    if (justSwitched) {
                         switched[0] = true;
                         host.setBallVisible(false);
                         host.setCapsuleVisible(true);

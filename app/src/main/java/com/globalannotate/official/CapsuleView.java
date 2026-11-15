@@ -4,12 +4,15 @@ import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ComposeShader;
+import android.graphics.Matrix;
 import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Point;
 import android.graphics.PointF;
 import android.graphics.PorterDuff;
+import android.graphics.RadialGradient;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.SweepGradient;
@@ -130,6 +133,13 @@ public final class CapsuleView extends FrameLayout {
             0xFFE7E040, 0xFFEEAA3C, 0xFFE8403B, 0xFFB33ED5,
             0xFF694AE8, 0xFF3CCAE7, 0xFF3CE885, 0xFF89E743,
     };
+    /** Official penpicker_palette_sweep_* stop positions (first colour repeats). */
+    private static final float[] WHEEL_POSITIONS = {
+            0f, 0.124f, 0.249f, 0.365f, 0.506f, 0.642f, 0.748f, 0.869f, 1f,
+    };
+    /** penpicker_palette_radial_center / _edge. */
+    private static final int WHEEL_RADIAL_CENTER = 0xFFE4E4E4;
+    private static final int WHEEL_RADIAL_EDGE = 0x00E4E4E4;
 
     private static final int HIT_TOOL = 0;
     private static final int HIT_SLOT = 1;
@@ -171,6 +181,10 @@ public final class CapsuleView extends FrameLayout {
     private float offsetT = 1f;
     private boolean offsetInitialized;
     private ValueAnimator offsetAnimator;
+
+    /** NaN = use the dock's own tool orientation; otherwise degrees. */
+    private float rotationOverrideDeg = Float.NaN;
+    private ValueAnimator rotationAnimator;
 
     /** 0 = full pill, 1 = the minimised ball circle. */
     private float collapse;
@@ -363,6 +377,8 @@ public final class CapsuleView extends FrameLayout {
      */
     public void enterCapsuleMode() {
         ballMode = false;
+        // A new expansion starts from the dock's own tool orientation.
+        clearToolRotation();
         requestLayout();
         recompute();
         int w = dp(capsuleW);
@@ -596,6 +612,8 @@ public final class CapsuleView extends FrameLayout {
         if (laidOutDock != dock) {
             laidOutDock = dock;
             snapToolOffsets();
+            rotationOverrideDeg = Float.NaN;
+            cancelToolRotationAnimation();
         }
 
         if (isBallLayout()) {
@@ -680,7 +698,7 @@ public final class CapsuleView extends FrameLayout {
                 : head;
         int laneY = vertical ? dp(HEAD_VERTICAL_DP) : dp(LANE_TOP_DP);
         int cursor = 0;
-        float rotation = vertical ? (dock.onLeft() ? 90f : 270f) : 0f;
+        float rotation = currentToolRotation();
         for (ToolView tool : tools) {
             int shortPx = dp(toolWidthDp(tool.style));
             tool.setRotationDeg(rotation);
@@ -786,6 +804,70 @@ public final class CapsuleView extends FrameLayout {
         invalidate();
     }
 
+    /**
+     * The official picker updates every tool's orientation when its position
+     * changes, so a capsule collapsing to a corner shows upright brushes and
+     * hands over to an upright ball without a glyph flip. The override lasts
+     * until {@link #clearToolRotation()} or the next capsule layout.
+     */
+    public void setToolRotation(float degrees) {
+        cancelToolRotationAnimation();
+        rotationOverrideDeg = Float.isNaN(degrees) ? Float.NaN : degrees;
+        applyToolRotation();
+    }
+
+    /** Same as {@link #setToolRotation(float)} but eases over {@code durationMs}. */
+    public void animateToolRotation(float target, long durationMs) {
+        final float from = currentToolRotation();
+        if (Math.abs(target - from) < 0.5f || durationMs <= 0L) {
+            setToolRotation(target);
+            return;
+        }
+        cancelToolRotationAnimation();
+        rotationOverrideDeg = from;
+        rotationAnimator = ValueAnimator.ofFloat(from, target);
+        rotationAnimator.setDuration(durationMs);
+        rotationAnimator.setInterpolator(new DecelerateInterpolator());
+        rotationAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator animation) {
+                rotationOverrideDeg = (float) animation.getAnimatedValue();
+                applyToolRotation();
+            }
+        });
+        rotationAnimator.start();
+        applyToolRotation();
+    }
+
+    /** Returns the tools to the orientation of the current dock. */
+    public void clearToolRotation() {
+        cancelToolRotationAnimation();
+        rotationOverrideDeg = Float.NaN;
+        applyToolRotation();
+    }
+
+    private void cancelToolRotationAnimation() {
+        if (rotationAnimator != null) {
+            rotationAnimator.cancel();
+            rotationAnimator = null;
+        }
+    }
+
+    private float currentToolRotation() {
+        if (!Float.isNaN(rotationOverrideDeg)) {
+            return rotationOverrideDeg;
+        }
+        return dock.vertical() ? (dock.onLeft() ? 90f : 270f) : 0f;
+    }
+
+    private void applyToolRotation() {
+        float rotation = currentToolRotation();
+        for (ToolView tool : tools) {
+            tool.setRotationDeg(rotation);
+        }
+        invalidate();
+    }
+
     private void startToolOffsetAnimation() {
         if (offsetAnimator != null) {
             offsetAnimator.cancel();
@@ -825,6 +907,7 @@ public final class CapsuleView extends FrameLayout {
             offsetAnimator.cancel();
             offsetAnimator = null;
         }
+        cancelToolRotationAnimation();
         super.onDetachedFromWindow();
     }
 
@@ -1128,16 +1211,11 @@ public final class CapsuleView extends FrameLayout {
             }
 
             if (wheel) {
-                // Live colour as the dot, with a thin sweep-gradient rim as the
-                // colour-wheel hint.
+                // Official I1IllI.l1IIii: the colour-wheel slot is the palette
+                // shader itself (sweep x radial), never the live pen colour.
                 paint.setStyle(Paint.Style.FILL);
-                paint.setShader(null);
-                paint.setColor(color);
-                canvas.drawCircle(cx, cy, r, paint);
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(dp(1.5f));
                 paint.setShader(wheelShader(cx, cy, r));
-                canvas.drawCircle(cx, cy, r - dp(0.75f), paint);
+                canvas.drawCircle(cx, cy, r, paint);
                 paint.setShader(null);
             } else {
                 paint.setStyle(Paint.Style.FILL);
@@ -1168,7 +1246,18 @@ public final class CapsuleView extends FrameLayout {
                 shaderCx = cx;
                 shaderCy = cy;
                 shaderR = r;
-                wheelShader = new SweepGradient(cx, cy, WHEEL_COLORS, null);
+                // The official compose: an eight-stop sweep rotated -90 deg,
+                // covered by a radial light-grey centre that fades to its rim.
+                int[] colors = new int[WHEEL_COLORS.length + 1];
+                System.arraycopy(WHEEL_COLORS, 0, colors, 0, WHEEL_COLORS.length);
+                colors[colors.length - 1] = WHEEL_COLORS[0];
+                SweepGradient sweep = new SweepGradient(cx, cy, colors, WHEEL_POSITIONS);
+                Matrix matrix = new Matrix();
+                matrix.setRotate(-90f, cx, cy);
+                sweep.setLocalMatrix(matrix);
+                RadialGradient radial = new RadialGradient(cx, cy, r,
+                        WHEEL_RADIAL_CENTER, WHEEL_RADIAL_EDGE, Shader.TileMode.CLAMP);
+                wheelShader = new ComposeShader(sweep, radial, PorterDuff.Mode.SRC_OVER);
             }
             return wheelShader;
         }

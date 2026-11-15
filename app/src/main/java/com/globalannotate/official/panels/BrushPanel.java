@@ -95,26 +95,33 @@ public final class BrushPanel extends LinearLayout {
      * canvas, so 25 is the common ceiling (eraser included).
      */
     public enum Tool {
-        BALLPOINT(1, 25, 6, "压力灵敏度", false),
-        PENCIL(1, 25, 3, "倾斜角灵敏度", false),
-        INK_PEN(1, 25, 15, "压力灵敏度", false),
-        MARKER(5, 25, 25, "压力灵敏度", false),
-        WATER_COLOR(5, 25, 25, "压力灵敏度", false),
-        ERASER(4, 25, 6, "压力灵敏度", true);
+        BALLPOINT(1, 25, 6, "压力灵敏度", false, 255),
+        PENCIL(1, 25, 3, "倾斜角灵敏度", false, 150),
+        INK_PEN(1, 25, 15, "压力灵敏度", false, 255),
+        MARKER(5, 25, 25, "压力灵敏度", false, 110),
+        WATER_COLOR(5, 25, 25, "压力灵敏度", false, 72),
+        ERASER(4, 25, 6, "压力灵敏度", true, 255);
 
         public final int minSize;
         public final int maxSize;
         public final int defaultSize;
         public final String sensitivityTitle;
         public final boolean eraser;
+        /**
+         * Style opacity ceiling, kept in sync with AnnotationView's private
+         * alphaFactor table so the sample does not look more opaque than the
+         * stroke it previews.
+         */
+        public final int previewAlpha;
 
         Tool(int minSize, int maxSize, int defaultSize, String sensitivityTitle,
-             boolean eraser) {
+             boolean eraser, int previewAlpha) {
             this.minSize = minSize;
             this.maxSize = maxSize;
             this.defaultSize = defaultSize;
             this.sensitivityTitle = sensitivityTitle;
             this.eraser = eraser;
+            this.previewAlpha = previewAlpha;
         }
     }
 
@@ -907,7 +914,8 @@ public final class BrushPanel extends LinearLayout {
             }
             path.close();
 
-            int color = eraser ? ERASER_PREVIEW : Color.argb(brushAlpha, Color.red(brushColor),
+            final int previewAlpha = Math.round(brushAlpha * tool.previewAlpha / 255f);
+            int color = eraser ? ERASER_PREVIEW : Color.argb(previewAlpha, Color.red(brushColor),
                     Color.green(brushColor), Color.blue(brushColor));
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(color);

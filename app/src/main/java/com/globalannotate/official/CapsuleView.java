@@ -919,6 +919,11 @@ public final class CapsuleView extends FrameLayout {
         }
     }
 
+    /** Orientation the tools are drawn at right now (hand-over angle). */
+    public float toolRotation() {
+        return currentToolRotation();
+    }
+
     private float currentToolRotation() {
         if (!Float.isNaN(rotationOverrideDeg)) {
             return rotationOverrideDeg;

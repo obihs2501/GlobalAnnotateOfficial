@@ -496,9 +496,10 @@ public final class FloatingService extends Service {
         final float[] ball = loadBallCentre();
         capsule.enterBallMode(host.ballSizePx());
         host.showBallAt(ball[0], ball[1], host.ballSizePx());
-        // A restored ball keeps the official edge orientation: LEFT +90,
-        // RIGHT -90, everything else upright (II11lli.m3475IlIl1l11).
-        host.ball().setRotation(ballRotationFor(nearestAnchor(ball[0], ball[1]).dock));
+        // This app keeps the brush inside the ball upright on every anchor.
+        // The official picker turns it +90/-90 on the left/right edges, but
+        // the product decision here overrides that.
+        host.ball().setRotation(0f);
         // CapsuleView.ballGesture() checks the actual frame, so keep the
         // capsule's params ball-sized for as long as it is collapsed.
         host.setCapsuleSize(host.ballSizePx(), host.ballSizePx());
@@ -2150,9 +2151,9 @@ public final class FloatingService extends Service {
 
         if (nearest.dock.corner()) {
             expanded = false;
-            // Official II11lli shows the minimised ball upright on the four
-            // corner anchors (m3475IlIl1l11 returns 0 for corners).
-            host.ball().setRotation(0f);
+            // The minimised ball is upright on every anchor; ease the brush
+            // back to upright instead of popping if it came from a side dock.
+            host.ball().animate().rotation(0f).setDuration(180L).start();
             host.capsule().setTransitioning(true);
             morph.beginSnap(nearest.cx, nearest.cy, new Runnable() {
                 @Override
@@ -2190,10 +2191,12 @@ public final class FloatingService extends Service {
 
         expanded = true;
         capsule.setTransitioning(true);
-        // Official II11lli.m3494lIlilI1iii cancels the ball rotation as the
-        // picker opens: animate() rotation 0 over 180 ms (it rotates only the
-        // brush glyph inside the ball, never the disc).
-        host.ball().animate().rotation(0f).setDuration(180L).start();
+        // The ball rests upright in this app, but the capsule's tools are
+        // dock-oriented. Turn the ball's glyph to the dock orientation while
+        // the ball is still the visible object (before the 35% hand-over), so
+        // the capsule never appears with a different glyph angle than the ball
+        // it replaces. Only the brush glyph rotates, never the disc.
+        host.ball().animate().rotation(dockToolRotation(dock)).setDuration(140L).start();
         morph.beginExpand(dock, target.x, target.y, new Runnable() {
             @Override
             public void run() {
@@ -2219,12 +2222,14 @@ public final class FloatingService extends Service {
         cancelRunningMorph();
         final Anchor anchor = nearestAnchor(x, y);
         expanded = false;
-        // Official II11lli.m3484IIii1I sets the ball's brush rotation from the
-        // picker position before the ball appears: LEFT +90, RIGHT -90, all
-        // other positions upright.
-        host.ball().animate().cancel();   // don't let a running expand rotation overwrite the dock rotation
-        host.ball().setRotation(ballRotationFor(anchor.dock));
-        host.capsule().animateToolRotation(ballRotationFor(anchor.dock), 180L);
+        // The ball hands over in the capsule's current tool orientation (so
+        // nothing flips at the collapse hand-over) and only then settles
+        // upright, which is the resting orientation this app wants. The
+        // capsule keeps its own dock during a collapse, so read its angle
+        // rather than the anchor's: a side-docked capsule can collapse to a
+        // corner anchor.
+        host.ball().animate().cancel();   // don't let a running expand animation overwrite the hand-over angle
+        host.ball().setRotation(host.capsule().toolRotation());
         host.capsule().setTransitioning(true);
         morph.beginCollapse(anchor.cx, anchor.cy, new Runnable() {
             @Override
@@ -2237,6 +2242,8 @@ public final class FloatingService extends Service {
                 // tool hit.
                 host.capsule().enterBallMode(host.ballSizePx());
                 host.setCapsuleSize(host.ballSizePx(), host.ballSizePx());
+                // The ball is on screen now; turn the brush upright inside it.
+                host.ball().animate().rotation(0f).setDuration(180L).start();
                 if (forCapsuleDrag) {
                     afterCollapseDrag = true;
                     // Latch the finger-to-ball offset at hand-over. Without
@@ -2373,11 +2380,12 @@ public final class FloatingService extends Service {
     }
 
     /**
-     * Official II11lli.m3475IlIl1l11: the minimised ball's brush is rotated only
-     * on the two vertical edge anchors, +90 on the left and -90 on the right;
-     * top, bottom and the four corners are upright.
+     * Tool orientation while the capsule is docked: +90 on the left edge, 270
+     * on the right (the same orientation as -90) and 0 on the top/bottom
+     * edges. This is the capsule's own table; the minimised ball ignores it
+     * and always shows the brush upright.
      */
-    private static float ballRotationFor(Types.Dock dock) {
+    private static float dockToolRotation(Types.Dock dock) {
         if (dock == Types.Dock.LEFT) {
             return 90f;
         }

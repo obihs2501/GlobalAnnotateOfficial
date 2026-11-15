@@ -123,6 +123,9 @@ public final class CapsuleView extends FrameLayout {
     private static final float MIN_LANE_DP = 120f;
     /** Ball drag threshold before a gesture counts as a drag. */
     private static final float BALL_TAP_SLOP_DP = 30f;
+    /** Hold time that opens the arc palette; movement beyond a touch slop cancels it. */
+    private static final long LONG_PRESS_MS = 500L;
+    private static final float LONG_PRESS_SLOP_DP = 8f;
 
     // -------------------- colours (the official light capsule) --------------------
     private static final int CAPSULE_BG = 0xFFFFFFFF;
@@ -205,6 +208,23 @@ public final class CapsuleView extends FrameLayout {
     private float downX;
     private float downY;
     private boolean dragging;
+
+    /** Ball long-press (the arc palette trigger); null when unused. */
+    private Runnable longPressListener;
+    private final Runnable longPressTask = new Runnable() {
+        @Override
+        public void run() {
+            if (swallowGesture || dragging) {
+                return;
+            }
+            // Swallow the rest of the stream: the palette now owns the screen,
+            // and the UP must not be read as a ball tap.
+            swallowGesture = true;
+            if (longPressListener != null) {
+                longPressListener.run();
+            }
+        }
+    };
 
     private float capsuleW;
     private float capsuleH;
@@ -308,6 +328,11 @@ public final class CapsuleView extends FrameLayout {
 
     public void setTouchDownListener(Runnable listener) {
         touchDownListener = listener;
+    }
+
+    /** Fired when the ball is held still for {@link #LONG_PRESS_MS}. */
+    public void setLongPressListener(Runnable listener) {
+        longPressListener = listener;
     }
 
     public void setScreenSizeDp(float widthDp, float heightDp) {
@@ -908,6 +933,7 @@ public final class CapsuleView extends FrameLayout {
 
     @Override
     protected void onDetachedFromWindow() {
+        removeCallbacks(longPressTask);
         if (offsetAnimator != null) {
             offsetAnimator.cancel();
             offsetAnimator = null;
@@ -940,6 +966,11 @@ public final class CapsuleView extends FrameLayout {
             downX = event.getRawX();
             downY = event.getRawY();
             dragging = false;
+            // A stationary hold on the ball opens the arc palette.
+            removeCallbacks(longPressTask);
+            if (longPressListener != null && ballGesture()) {
+                postDelayed(longPressTask, LONG_PRESS_MS);
+            }
             return true;
         }
         if (swallowGesture) {
@@ -954,8 +985,12 @@ public final class CapsuleView extends FrameLayout {
                     boolean ball = ballGesture();
                     float threshold = ball ? BALL_TAP_SLOP_DP * density : scaledTouchSlop;
                     double distance = Math.hypot(rawX - downX, rawY - downY);
+                    if (distance > LONG_PRESS_SLOP_DP * density) {
+                        removeCallbacks(longPressTask);
+                    }
                     if (distance > threshold) {
                         dragging = true;
+                        removeCallbacks(longPressTask);
                         if (dragListener != null) {
                             dragListener.onDragStart(ball, event.getX(), event.getY());
                         }
@@ -973,6 +1008,7 @@ public final class CapsuleView extends FrameLayout {
                 return true;
             }
             case MotionEvent.ACTION_UP: {
+                removeCallbacks(longPressTask);
                 if (dragging) {
                     if (dragListener != null) {
                         dragListener.onDragEnd(event.getRawX(), event.getRawY());
@@ -988,6 +1024,7 @@ public final class CapsuleView extends FrameLayout {
                 return true;
             }
             case MotionEvent.ACTION_CANCEL: {
+                removeCallbacks(longPressTask);
                 if (dragging && dragListener != null) {
                     dragListener.onDragEnd(event.getRawX(), event.getRawY());
                 }

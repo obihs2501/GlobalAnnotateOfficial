@@ -97,18 +97,18 @@ public final class GestureLaunchReceiver extends BroadcastReceiver {
 
     /**
      * A gesture while the overlay is down summons it, matching the old app's
-     * {@code if (!active) setActive(true) else applyGesture()}. The current
-     * FloatingService has no gesture command surface (eraser toggle, undo,
-     * redo, ...), so a gesture while it is already up is logged and ignored
-     * instead of guessed at.
+     * {@code if (!active) setActive(true) else applyGesture()}. While it is up
+     * the gesture goes to the service: SQUEEZE and DOUBLE_TAP toggle the arc
+     * palette, the same action the official build maps to pen keys 194/195.
      */
     private static void onGesture(Context context, String name) {
         if (name == null || name.isEmpty()) {
             Log.w(TAG, "gesture without a name ignored");
             return;
         }
-        if (isOverlayRunning(context)) {
-            Log.i(TAG, "gesture " + name + " ignored: overlay already running");
+        if (FloatingService.isRunning()) {
+            Log.i(TAG, "gesture " + name + " -> FloatingService");
+            FloatingService.handleExternalGesture(name);
             return;
         }
         Log.i(TAG, "gesture " + name + " summons the overlay");
@@ -180,6 +180,11 @@ public final class GestureLaunchReceiver extends BroadcastReceiver {
         } catch (RuntimeException error) {
             Log.w(TAG, "module notification failed", error);
         }
+    }
+
+    /** The service owns the truth: it clears this on destroy. */
+    static void clearOverlayRunning(Context context) {
+        setOverlayRunning(context, false);
     }
 
     private static boolean isOverlayRunning(Context context) {

@@ -5,6 +5,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.animation.ValueAnimator;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.Context;
@@ -29,6 +30,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.view.animation.LinearInterpolator;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
@@ -131,6 +133,8 @@ public final class FloatingService extends Service {
     private boolean capsuleDrag;
     private boolean afterCollapseDrag;
     private boolean pendingRelease;
+    /** True while the overlay is hidden for a screenshot: no input at all. */
+    private boolean exporting;
 
     private float grabDx;
     private float grabDy;
@@ -161,8 +165,21 @@ public final class FloatingService extends Service {
     private FrameLayout colorPanelHost;
     private FrameLayout brushPanelHost;
     private FrameLayout moreMenuHost;
+
+    /** Arc pen palette, its full-screen window and the open/close animation. */
+    private RadialPalette palette;
+    private FrameLayout paletteHost;
+    private ValueAnimator paletteAnimator;
+    private boolean paletteOpen;
+    /** Last instance, for gesture broadcasts that arrive on the Binder thread. */
+    private static volatile FloatingService instance;
     /** Window root of the panel currently attached, or null. */
     private FrameLayout openPanelHost;
+    /** Screen origin of the attached panel window; stylus events are rebased. */
+    private int openPanelX;
+    private int openPanelY;
+    /** Every panel window this service has attached and not yet removed. */
+    private final ArrayList<FrameLayout> attachedPanelHosts = new ArrayList<>();
     /** Invalidates the delayed window removal of an already dismissed panel. */
     private int panelDismissToken;
 
@@ -192,7 +209,26 @@ public final class FloatingService extends Service {
             new AnnotationInputService.InputSink() {
                 @Override
                 public void onStylusEvent(MotionEvent event) {
-                    if (started && annotationView != null) {
+                    if (!started || exporting) {
+                        return;
+                    }
+                    // The helper drops these events from normal window
+                    // dispatch, so whichever overlay window is on top has to
+                    // receive them here: the palette, an open panel, or the
+                    // canvas. A panel is placed at its own window origin, so
+                    // screen coordinates must be rebased for it.
+                    if (paletteOpen && paletteHost != null) {
+                        paletteHost.dispatchTouchEvent(event);
+                        return;
+                    }
+                    if (openPanelHost != null) {
+                        final MotionEvent local = MotionEvent.obtain(event);
+                        local.offsetLocation(-openPanelX, -openPanelY);
+                        openPanelHost.dispatchTouchEvent(local);
+                        local.recycle();
+                        return;
+                    }
+                    if (annotationView != null) {
                         annotationView.dispatchTouchEvent(event);
                     }
                 }
@@ -207,6 +243,9 @@ public final class FloatingService extends Service {
     private final View.OnTouchListener proxyTouch = new View.OnTouchListener() {
         @Override
         public boolean onTouch(View v, MotionEvent event) {
+            if (exporting) {
+                return true;
+            }
             final int action = event.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN) {
                 proxyPinned = true;
@@ -235,6 +274,11 @@ public final class FloatingService extends Service {
     private final View.OnTouchListener annotationTouch = new View.OnTouchListener() {
         @Override
         public boolean onTouch(View v, MotionEvent event) {
+            if (exporting) {
+                // The window is NOT_TOUCHABLE during a screenshot; this is
+                // the belt-and-braces guard for a race on the flag update.
+                return true;
+            }
             final int action = event.getActionMasked();
             if (swallowOutsideGesture) {
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
@@ -265,6 +309,7 @@ public final class FloatingService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         density = getResources().getDisplayMetrics().density;
         insetPx = Math.round(EDGE_INSET_DP * density);
@@ -323,6 +368,12 @@ public final class FloatingService extends Service {
     @Override
     public void onDestroy() {
         discardPanels();
+        closePalette(false);
+        cancelPaletteAnimation();
+        instance = null;
+        // The receiver's persisted flag must follow the service, else the next
+        // corner swipe believes the overlay is up and refuses to summon it.
+        GestureLaunchReceiver.clearOverlayRunning(this);
         started = false;
         proxyPinned = false;
         ballDrag = false;
@@ -377,6 +428,14 @@ public final class FloatingService extends Service {
             @Override
             public void run() {
                 onCapsuleTouchDown();
+            }
+        });
+        capsule.setLongPressListener(new Runnable() {
+            @Override
+            public void run() {
+                // The official arc palette is pen-key driven; a ball hold is
+                // this app's reachable equivalent.
+                togglePalette();
             }
         });
         capsule.update(penStyle, penColor, annotationView.canUndo(), annotationView.canRedo());
@@ -704,6 +763,229 @@ public final class FloatingService extends Service {
         }
     };
 
+    private final RadialPalette.Listener paletteListener = new RadialPalette.Listener() {
+        @Override
+        public void onTool(Types.PenStyle style) {
+            if (style == null || annotationView == null) {
+                return;
+            }
+            penStyle = style;
+            annotationView.setPenStyle(style);
+            if (palette != null) {
+                palette.setSelected(style);
+            }
+            refreshCapsule();
+        }
+
+        @Override
+        public void onUndo() {
+            if (annotationView != null) {
+                annotationView.undo();
+                refreshCapsule();
+            }
+        }
+
+        @Override
+        public void onRedo() {
+            if (annotationView != null) {
+                annotationView.redo();
+                refreshCapsule();
+            }
+        }
+
+        @Override
+        public void onColor() {
+            closePalette(false);
+            showColorPanel(palettePanelAnchor());
+        }
+
+        @Override
+        public void onMore() {
+            closePalette(false);
+            showMoreMenu(palettePanelAnchor());
+        }
+
+        @Override
+        public void onDismiss() {
+            closePalette(true);
+        }
+    };
+
+    /** Colour / more panels open at the right edge, where the palette sits. */
+    private int palettePanelAnchor() {
+        return Math.max(insetPx, screenW - dp(72f));
+    }
+
+    /** Ball long-press or a pen squeeze: the arc palette toggles. */
+    private void togglePalette() {
+        if (paletteOpen) {
+            closePalette(true);
+        } else {
+            openPalette();
+        }
+    }
+
+    private void openPalette() {
+        if (!started || host == null || morph == null) {
+            return;
+        }
+        dismissPanels();
+        if (expanded) {
+            // Official collapses the picker before the palette appears.
+            final Rect visible = morph.visibleRect();
+            final float x = visible != null ? visible.exactCenterX() : morph.ballCx();
+            final float y = visible != null ? visible.exactCenterY() : morph.ballCy();
+            collapseToNearest(x, y, false);
+        }
+        if (morph.isAnimating()) {
+            // Let the capsule finish collapsing into its ball first.
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    showPaletteNow();
+                }
+            }, 360L);
+        } else {
+            showPaletteNow();
+        }
+    }
+
+    private void showPaletteNow() {
+        if (!started || paletteOpen || host == null) {
+            return;
+        }
+        if (palette == null) {
+            palette = new RadialPalette(this, paletteListener);
+        }
+        palette.setColors(toolColors());
+        palette.setSelected(penStyle);
+        palette.setOpenProgress(0f);
+
+        final FrameLayout root = new PanelHost(this);
+        root.setClickable(true);
+        root.addView(palette, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        final WindowManager.LayoutParams params = overlayParams();
+        // Full screen and touchable: the palette is transparent outside the
+        // band, so its own hit test decides between a hidden control and a
+        // dismiss, exactly like the official wrapper.
+        params.flags = BASE_OVERLAY_FLAGS;
+        if (!addOverlay(root, params)) {
+            return;
+        }
+        paletteHost = root;
+        paletteOpen = true;
+        palette.show();
+        animatePalette(0f, 1f);
+    }
+
+    private void closePalette(boolean animated) {
+        if (!paletteOpen) {
+            return;
+        }
+        if (animated) {
+            animatePalette(1f, 0f);
+            return;
+        }
+        cancelPaletteAnimation();
+        finishClosePalette();
+    }
+
+    /**
+     * Official open/close: the 492dp square scales 0.5 -> 1 on a
+     * spring(0.75, 0.39) with a short fade. Closing is the reverse.
+     */
+    private void animatePalette(final float from, final float to) {
+        cancelPaletteAnimation();
+        final Spring spring = new Spring(0.75f, 0.39f);
+        final ValueAnimator anim = ValueAnimator.ofFloat(0f, 1f);
+        anim.setDuration(to > from ? spring.durationMs() : 180L);
+        anim.setInterpolator(new LinearInterpolator());
+        anim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator animation) {
+                if (palette == null || paletteAnimator != animation) {
+                    return;
+                }
+                final float fraction = animation.getAnimatedFraction();
+                final float shaped = to > from ? spring.getInterpolation(fraction)
+                        : 1f - (1f - fraction) * (1f - fraction);
+                palette.setOpenProgress(from + (to - from) * shaped);
+            }
+        });
+        anim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                if (paletteAnimator != animation) {
+                    return;
+                }
+                paletteAnimator = null;
+                if (to <= 0f) {
+                    finishClosePalette();
+                }
+            }
+        });
+        paletteAnimator = anim;
+        anim.start();
+    }
+
+    private void cancelPaletteAnimation() {
+        final ValueAnimator running = paletteAnimator;
+        if (running != null) {
+            paletteAnimator = null;
+            running.cancel();
+        }
+    }
+
+    private void finishClosePalette() {
+        paletteOpen = false;
+        if (palette != null) {
+            palette.hide();
+            palette.setOpenProgress(0f);
+        }
+        if (paletteHost != null) {
+            removeOverlay(paletteHost);
+            paletteHost = null;
+        }
+    }
+
+    /** Per-tool colours for the arc; the app keeps one colour per session. */
+    private int[] toolColors() {
+        final Types.PenStyle[] styles = Types.PenStyle.values();
+        final int[] colors = new int[styles.length];
+        for (int i = 0; i < styles.length; i++) {
+            colors[i] = penColor;
+        }
+        return colors;
+    }
+
+    /** True while the overlay windows are up; used by the gesture receiver. */
+    public static boolean isRunning() {
+        final FloatingService service = instance;
+        return service != null && service.started;
+    }
+
+    /**
+     * Gesture broadcast entry point (pen squeeze / double tap), delivered on
+     * the Binder thread by {@link GestureLaunchReceiver}.
+     */
+    public static void handleExternalGesture(String name) {
+        final FloatingService service = instance;
+        if (service == null || name == null) {
+            return;
+        }
+        if (!"SQUEEZE".equals(name) && !"DOUBLE_TAP".equals(name)) {
+            return;
+        }
+        service.mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                service.togglePalette();
+            }
+        });
+    }
+
     private final MoreMenuView.Listener moreMenuListener = new MoreMenuView.Listener() {
         @Override
         public void onAction(MoreMenuView.Action action) {
@@ -886,12 +1168,39 @@ public final class FloatingService extends Service {
     }
 
     private void setOverlayVisible(boolean visible) {
+        exporting = !visible;
         final int visibility = visible ? View.VISIBLE : View.INVISIBLE;
         if (annotationView != null) {
             annotationView.setVisibility(visibility);
         }
         if (host != null) {
             host.setVisibility(visibility);
+        }
+        // Invisible views still own their window's touch region. During the
+        // screenshot the canvas and the proxy must stop receiving touches, or
+        // a stray tap is recorded as a stroke and eaten from the app below.
+        setWindowTouchable(annotationView, visible);
+        setWindowTouchable(proxy, visible);
+    }
+
+    private void setWindowTouchable(View view, boolean touchable) {
+        if (view == null || windowManager == null) {
+            return;
+        }
+        final ViewGroup.LayoutParams raw = view.getLayoutParams();
+        if (!(raw instanceof WindowManager.LayoutParams)) {
+            return;
+        }
+        final WindowManager.LayoutParams lp = (WindowManager.LayoutParams) raw;
+        if (touchable) {
+            lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        } else {
+            lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        }
+        try {
+            windowManager.updateViewLayout(view, lp);
+        } catch (RuntimeException ignored) {
+            // The window went away with the service.
         }
     }
 
@@ -978,22 +1287,39 @@ public final class FloatingService extends Service {
      * animation: the window params own the placement.
      */
     private int[] placePanel(View panel, FrameLayout windowRoot, int width, int height, int anchorX) {
-        if (panel == null || windowRoot == null) {
+        if (panel == null || windowRoot == null || windowManager == null) {
             return null;
         }
-        // Only one panel window is ever attached; drop the previous one and
-        // invalidate any exit removal still pending for it.
+        // Only one panel window is ever attached. A dismissed panel can still
+        // be waiting out its 150ms exit; reopening it in that window reuses
+        // the attached host, because adding it twice throws and the failed
+        // add would leave the old host attached forever.
         panelDismissToken++;
-        if (openPanelHost != null) {
-            removeOverlay(openPanelHost);
-            openPanelHost = null;
+        final int[] origin = panelOrigin(anchorX, width, height);
+        final WindowManager.LayoutParams params =
+                panelParams(width, height, origin[0], origin[1]);
+        if (attachedPanelHosts.contains(windowRoot)) {
+            try {
+                windowManager.updateViewLayout(windowRoot, params);
+            } catch (RuntimeException gone) {
+                attachedPanelHosts.remove(windowRoot);
+                return null;
+            }
+            openPanelHost = windowRoot;
+            openPanelX = origin[0];
+            openPanelY = origin[1];
+            return origin;
         }
 
-        final int[] origin = panelOrigin(anchorX, width, height);
-        if (!addOverlay(windowRoot, panelParams(width, height, origin[0], origin[1]))) {
+        // A different panel (or an orphaned one) goes immediately.
+        detachPanelWindows();
+        if (!addOverlay(windowRoot, params)) {
             return null;
         }
+        attachedPanelHosts.add(windowRoot);
         openPanelHost = windowRoot;
+        openPanelX = origin[0];
+        openPanelY = origin[1];
         return origin;
     }
 
@@ -1099,6 +1425,7 @@ public final class FloatingService extends Service {
             public void run() {
                 if (token == panelDismissToken) {
                     removeOverlay(windowRoot);
+                    attachedPanelHosts.remove(windowRoot);
                 }
             }
         }, PANEL_HIDE_MS);
@@ -1106,13 +1433,24 @@ public final class FloatingService extends Service {
 
     /** Drops every panel at once: rotation, service stop, and before a re-show. */
     private void discardPanels() {
-        panelDismissToken++;
         hidePanels();
-        if (openPanelHost != null) {
-            removeOverlay(openPanelHost);
-            openPanelHost = null;
-        }
+        detachPanelWindows();
         persistPanelStateNow();
+    }
+
+    /**
+     * Removes every attached panel window right now. The delayed removal in
+     * {@link #dismissPanels()} is not the only way out: if anything invalidates
+     * its token first, the window would stay registered and, being modal, would
+     * keep swallowing the whole screen's touches.
+     */
+    private void detachPanelWindows() {
+        for (int i = attachedPanelHosts.size() - 1; i >= 0; i--) {
+            removeOverlay(attachedPanelHosts.get(i));
+        }
+        attachedPanelHosts.clear();
+        openPanelHost = null;
+        panelDismissToken++;
     }
 
     private void hidePanels() {
@@ -1636,6 +1974,7 @@ public final class FloatingService extends Service {
         }
         // Rotation / dock change: a panel placed for the old geometry is stale.
         discardPanels();
+        closePalette(false);
         proxyPinned = false;
         swallowOutsideGesture = false;
         ballDrag = false;

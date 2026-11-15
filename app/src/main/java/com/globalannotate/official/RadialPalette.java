@@ -80,9 +80,9 @@ import android.view.View;
  * official square's centre and the default pivot of the official scale
  * animation.
  *
- * <p><b>Drawing order.</b> Band, divider, five brushes, then the four buttons.
+ * <p><b>Drawing order.</b> Band, five brushes, divider, then the four buttons.
  * Mi Canvas marks the button container with elevation 10, which puts its white
- * sector and controls above the brushes; this port keeps the controls on top
+ * sector, divider and controls above the brushes; this port keeps those on top
  * but leaves the band itself as the only background, so all five brushes stay
  * visible. The official blurred shadow (a {@code BlurMaskFilter} bitmap in
  * {@code lIi11II1ill.II11lli}) and the elevation shadow are not reproduced:
@@ -96,7 +96,11 @@ import android.view.View;
  */
 public final class RadialPalette extends View {
 
-    /** Host callbacks. All are invoked on the UI thread. */
+    /**
+     * Host callbacks. All are invoked on the UI thread. The palette reports a
+     * brush tap through {@link #onTool}; the host owns the tool state and is
+     * expected to call {@link #setSelected} when the active style changes.
+     */
     public interface Listener {
         void onTool(Types.PenStyle style);
 
@@ -287,6 +291,9 @@ public final class RadialPalette extends View {
         setClickable(true);
         setFocusable(true);
         setWillNotDraw(false);
+        // The host owns the opening animation; start hidden like the other
+        // transient picker views (MoreMenuView, BrushPanel).
+        setVisibility(GONE);
     }
 
     // ----public API
@@ -428,8 +435,8 @@ public final class RadialPalette extends View {
         canvas.scale(scale, scale, cx, cy);
 
         drawBand(canvas);
-        drawDivider(canvas);
         drawBrushes(canvas);
+        drawDivider(canvas);
         drawButton(canvas, ACTION_UNDO, UNDO_ANGLE);
         drawButton(canvas, ACTION_REDO, REDO_ANGLE);
         drawButton(canvas, ACTION_COLOR, COLOR_ANGLE);
@@ -617,6 +624,9 @@ public final class RadialPalette extends View {
 
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN: {
+                if (getParent() != null) {
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                }
                 hitTest(x, y);
                 pressedButton = isButton(hitKind) ? hitKind : ACTION_NONE;
                 pressedTool = hitKind == ACTION_BRUSH ? hitStyle : null;
@@ -641,6 +651,9 @@ public final class RadialPalette extends View {
                 return true;
             }
             case MotionEvent.ACTION_UP: {
+                if (getParent() != null) {
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                }
                 hitTest(x, y);
                 final int upKind = hitKind;
                 final Types.PenStyle upStyle = hitStyle;
@@ -666,6 +679,9 @@ public final class RadialPalette extends View {
                 return true;
             }
             case MotionEvent.ACTION_CANCEL: {
+                if (getParent() != null) {
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                }
                 clearInteractionState();
                 invalidate();
                 return true;

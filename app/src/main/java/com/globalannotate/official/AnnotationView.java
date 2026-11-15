@@ -174,8 +174,9 @@ public final class AnnotationView extends View {
         if (action == MotionEvent.ACTION_DOWN) {
             // A previous gesture was lost; close it instead of leaking it.
             finishActive();
-            if (!fingerDrawEnabled
-                    && event.getToolType(0) != MotionEvent.TOOL_TYPE_STYLUS) {
+            final int toolType = event.getToolType(0);
+            if (!fingerDrawEnabled && toolType != MotionEvent.TOOL_TYPE_STYLUS
+                    && toolType != MotionEvent.TOOL_TYPE_ERASER) {
                 // Swallow: without the passthrough helper the window would eat
                 // the touch anyway, and a stroke here would be unwanted ink.
                 activePointerId = MotionEvent.INVALID_POINTER_ID;

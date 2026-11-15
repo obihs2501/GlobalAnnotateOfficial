@@ -24,6 +24,22 @@
     <string name="ga_export_saved_ink">已保存（仅批注层，未取得截屏）</string>
     <string name="ga_export_failed">保存失败</string>
 
+    <string name="ga_gesture_title">笔身手势</string>
+    <string name="ga_gesture_squeeze">轻捏笔身</string>
+    <string name="ga_gesture_double_tap">双击笔身</string>
+    <string name="ga_gesture_slide_up">向上滑动</string>
+    <string name="ga_gesture_slide_down">向下滑动</string>
+    <string name="ga_gesture_back_format">‹ %1$s</string>
+    <string name="ga_action_none">无</string>
+    <string name="ga_action_arc_palette">弧形笔盘</string>
+    <string name="ga_action_eraser">橡皮</string>
+    <string name="ga_action_undo">撤销</string>
+    <string name="ga_action_redo">重做</string>
+    <string name="ga_action_save_image">保存图片</string>
+    <string name="ga_action_save_pdf">保存 PDF</string>
+    <string name="ga_action_clear">清空批注</string>
+    <string name="ga_action_exit">退出批注</string>
+
     <string name="ga_notification_channel">悬浮批注</string>
     <string name="ga_notification_channel_desc">保持全局批注在其它应用上层运行</string>
     <string name="ga_notification_title">全局批注正在运行</string>

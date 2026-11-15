@@ -36,6 +36,7 @@ import android.widget.Toast;
 
 import com.globalannotate.official.panels.BrushPanel;
 import com.globalannotate.official.panels.ColorPanel;
+import com.globalannotate.official.panels.PenGesturePanel;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -81,11 +82,13 @@ public final class FloatingService extends Service {
 
     /**
      * Panel windows. The widths repeat the panels' own private sizes
-     * ({@code ColorPanel} is 360dp, {@code BrushPanel} 288dp) because the
-     * WindowManager needs them before the panel has a parent.
+     * ({@code ColorPanel} is 360dp, {@code BrushPanel} 288dp, {@code
+     * PenGesturePanel} 300dp) because the WindowManager needs them before the
+     * panel has a parent.
      */
     private static final float COLOR_PANEL_WIDTH_DP = 360f;
     private static final float BRUSH_PANEL_WIDTH_DP = 288f;
+    private static final float GESTURE_PANEL_WIDTH_DP = 300f;
     /** The more card is 200dp wide (official MoreActionPopupWindow). */
     private static final float MORE_MENU_WIDTH_DP = 200f;
     /** Free space kept between a panel and the capsule. */
@@ -103,6 +106,8 @@ public final class FloatingService extends Service {
     private static final String KEY_COLOR = "color";
     private static final String KEY_RECENT_COLORS = "recentColors";
     private static final String BRUSH_KEY_PREFIX = "brush_";
+    /** One stored {@link PenGesturePanel.Action} name per pen gesture. */
+    private static final String GESTURE_KEY_PREFIX = "gesture_";
     /** One persisted boolean per MoreMenuView switch. */
     private static final String SWITCH_KEY_PREFIX = "switch_";
     private static final int MAX_RECENT_COLORS = 12;
@@ -168,9 +173,13 @@ public final class FloatingService extends Service {
     private ColorPanel colorPanel;
     private BrushPanel brushPanel;
     private MoreMenuView moreMenu;
+    private PenGesturePanel gesturePanel;
     private FrameLayout colorPanelHost;
     private FrameLayout brushPanelHost;
     private FrameLayout moreMenuHost;
+    private FrameLayout gesturePanelHost;
+    /** Anchor the gesture card opened on, for re-placing it after a level swap. */
+    private int gesturePanelAnchorX;
 
     /** Arc pen palette, its full-screen window and the open/close animation. */
     private RadialPalette palette;
@@ -789,6 +798,32 @@ public final class FloatingService extends Service {
         }
     };
 
+    private final PenGesturePanel.Listener gesturePanelListener =
+            new PenGesturePanel.Listener() {
+                @Override
+                public void onActionSelected(PenGesturePanel.Gesture gesture,
+                                             PenGesturePanel.Action action) {
+                    if (gesture == null) {
+                        return;
+                    }
+                    final PenGesturePanel.Action value =
+                            action != null ? action : PenGesturePanel.Action.NONE;
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString(GESTURE_KEY_PREFIX + gesture.name(), value.name())
+                            .apply();
+                }
+
+                @Override
+                public void onContentHeightChanged() {
+                    resizeGesturePanel();
+                }
+
+                @Override
+                public void onDismiss() {
+                    dismissPanels();
+                }
+            };
+
     private final RadialPalette.Listener paletteListener = new RadialPalette.Listener() {
         @Override
         public void onTool(Types.PenStyle style) {
@@ -1010,28 +1045,82 @@ public final class FloatingService extends Service {
     }
 
     /**
-     * Gesture broadcast entry point (pen squeeze / double tap), delivered on
-     * the Binder thread by {@link GestureLaunchReceiver}.
+     * Gesture broadcast entry point, delivered on the Binder thread by
+     * {@link GestureLaunchReceiver}. All four helper gesture names are
+     * accepted; the stored binding decides what runs.
      */
     public static void handleExternalGesture(String name) {
         final FloatingService service = instance;
-        if (service == null || name == null) {
+        final PenGesturePanel.Gesture gesture = PenGesturePanel.Gesture.fromName(name);
+        if (service == null || gesture == null) {
             return;
         }
-        if (!"SQUEEZE".equals(name) && !"DOUBLE_TAP".equals(name)) {
-            return;
-        }
+        // The binding is read on the main thread with the rest of the service
+        // state, so a Binder caller never touches the views itself.
         service.mainHandler.post(new Runnable() {
             @Override
             public void run() {
-                service.togglePalette();
+                service.runGestureAction(gesture);
             }
         });
+    }
+
+    /** Runs the action currently bound to {@code gesture}; main thread only. */
+    private void runGestureAction(PenGesturePanel.Gesture gesture) {
+        // Every action below drives the canvas or its overlay; one guard
+        // covers them all.
+        if (gesture == null || annotationView == null || host == null) {
+            return;
+        }
+        // A pen gesture is a global command: an open card must not swallow it
+        // or end up in a gesture-triggered screenshot.
+        dismissPanels();
+        switch (storedGestureAction(gesture)) {
+            case ARC_PALETTE:
+                togglePalette();
+                break;
+            case ERASER:
+                penStyle = Types.PenStyle.ERASER;
+                applyBrushToView();
+                refreshCapsule();
+                break;
+            case UNDO:
+                annotationView.undo();
+                refreshCapsule();
+                break;
+            case REDO:
+                annotationView.redo();
+                refreshCapsule();
+                break;
+            case SAVE_IMAGE:
+                // The palette is its own window and setOverlayVisible() does
+                // not hide it; close it before the screenshot is taken.
+                closePalette(false);
+                exportAnnotation(false);
+                break;
+            case SAVE_PDF:
+                closePalette(false);
+                exportAnnotation(true);
+                break;
+            case CLEAR:
+                annotationView.clear();
+                refreshCapsule();
+                break;
+            case EXIT:
+                stopSelf();
+                break;
+            case NONE:
+            default:
+                break;
+        }
     }
 
     private final MoreMenuView.Listener moreMenuListener = new MoreMenuView.Listener() {
         @Override
         public void onAction(MoreMenuView.Action action) {
+            // The gesture card opens on the more card's own centre, so read
+            // the open panel's window geometry while it is still current.
+            final int panelAnchor = openPanelX + openPanelW / 2;
             dismissPanels();
             switch (action) {
                 case SAVE_IMAGE:
@@ -1050,6 +1139,8 @@ public final class FloatingService extends Service {
                     stopSelf();
                     break;
                 case PEN_GESTURES:
+                    showGesturePanel(panelAnchor);
+                    break;
                 case LONG_SCREENSHOT:
                 default:
                     Toast.makeText(FloatingService.this, R.string.ga_more_hint,
@@ -1096,6 +1187,14 @@ public final class FloatingService extends Service {
             moreMenuHost = newPanelHost(moreMenu);
         }
         return moreMenu;
+    }
+
+    private PenGesturePanel ensureGesturePanel() {
+        if (gesturePanel == null) {
+            gesturePanel = new PenGesturePanel(this, gesturePanelListener);
+            gesturePanelHost = newPanelHost(gesturePanel);
+        }
+        return gesturePanel;
     }
 
     private FrameLayout newPanelHost(View panel) {
@@ -1160,6 +1259,60 @@ public final class FloatingService extends Service {
         final boolean fallback = setting == MoreMenuView.Setting.FINGER_DRAW;
         return getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getBoolean(SWITCH_KEY_PREFIX + setting.name(), fallback);
+    }
+
+    /**
+     * Opens the pen-gesture card from the more menu, on the row's own anchor.
+     * The card always starts on level 1 (the four gestures), with every
+     * binding freshly loaded from prefs.
+     */
+    private void showGesturePanel(int anchorX) {
+        if (!started || host == null) {
+            return;
+        }
+        final PenGesturePanel panel = ensureGesturePanel();
+        for (PenGesturePanel.Gesture gesture : PenGesturePanel.Gesture.values()) {
+            panel.setAction(gesture, storedGestureAction(gesture));
+        }
+        panel.showGestures();
+        gesturePanelAnchorX = anchorX;
+
+        final int width = panelWidthPx(GESTURE_PANEL_WIDTH_DP);
+        final int height = panelHeightPx(panel.measuredHeightForWidth(width));
+        final int[] origin = placePanel(panel, gesturePanelHost, width, height, anchorX);
+        if (origin == null) {
+            return;
+        }
+        panel.showAt(anchorX, panelAnchorY(origin, height),
+                insetPx, Math.max(insetPx, screenH - insetPx));
+        pinPanelSize(panel, width, height);
+    }
+
+    /**
+     * The gesture card swapped between its two levels, so its content height
+     * changed. Re-measure and re-place the still-open window; the panel's
+     * ScrollView keeps a clamped card usable on short screens.
+     */
+    private void resizeGesturePanel() {
+        if (gesturePanel == null || gesturePanelHost == null
+                || openPanelHost != gesturePanelHost) {
+            return;
+        }
+        final int width = panelWidthPx(GESTURE_PANEL_WIDTH_DP);
+        final int height = panelHeightPx(gesturePanel.measuredHeightForWidth(width));
+        pinPanelSize(gesturePanel, width, height);
+        placePanel(gesturePanel, gesturePanelHost, width, height, gesturePanelAnchorX);
+    }
+
+    /** The bound action for a gesture, falling back to its documented default. */
+    private PenGesturePanel.Action storedGestureAction(PenGesturePanel.Gesture gesture) {
+        if (gesture == null) {
+            return PenGesturePanel.Action.NONE;
+        }
+        final String stored = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(GESTURE_KEY_PREFIX + gesture.name(), null);
+        final PenGesturePanel.Action action = PenGesturePanel.Action.fromName(stored);
+        return action != null ? action : gesture.defaultAction;
     }
 
     /** Saves the annotations over a root screenshot, or as an ink-only file. */
@@ -1519,6 +1672,9 @@ public final class FloatingService extends Service {
         }
         if (moreMenu != null) {
             moreMenu.hide();
+        }
+        if (gesturePanel != null) {
+            gesturePanel.hide();
         }
     }
 

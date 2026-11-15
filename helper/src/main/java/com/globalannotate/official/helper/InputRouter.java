@@ -24,6 +24,10 @@ import io.github.libxposed.api.XposedInterface;
  */
 public final class InputRouter {
 
+    /** Caps the one-shot liveness trace of the display pointer listener. */
+    private static final int POINTER_TRACE_LIMIT = 32;
+    private static int pointerTraced = 0;
+
     private static boolean armed = false;
     private static boolean fired = false;
 
@@ -127,6 +131,17 @@ public final class InputRouter {
         int tool = event.getToolType(0);
         boolean isStylus = tool == MotionEvent.TOOL_TYPE_STYLUS
                 || tool == MotionEvent.TOOL_TYPE_ERASER;
+
+        // Liveness trace for the display pointer listener: it proves the
+        // SystemGesturesPointerEventListener hook is actually invoked on this
+        // ROM. Capped so a normal session only logs the start of one stream.
+        if (!canFilter && pointerTraced < POINTER_TRACE_LIMIT) {
+            pointerTraced++;
+            GaLog.i("pointer listener event "
+                    + MotionEvent.actionToString(event.getActionMasked())
+                    + " tool=" + tool + " at (" + (int) event.getX()
+                    + "," + (int) event.getY() + ")");
+        }
 
         // Observation only — never consumes because of the corner gesture.
         if (isStylus) {

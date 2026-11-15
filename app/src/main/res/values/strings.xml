@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">全局批注</string>
+
+    <string name="ga_explanation">开启后，屏幕上会出现一支悬浮画笔。点击小球展开画笔胶囊，
+可以直接在任意应用上书写批注。批注画布覆盖整个屏幕，再次点击小球区域可展开/收起画笔。</string>
+
+    <string name="ga_start">开始批注</string>
+    <string name="ga_exit">停止批注</string>
+
+    <string name="ga_overlay_needed">需要先授予「显示在其他应用上层」权限</string>
+    <string name="ga_overlay_granted">悬浮窗权限已授予</string>
+    <string name="ga_overlay_missing">悬浮窗权限未授予</string>
+    <string name="ga_status_format">状态：%1$s</string>
+    <string name="ga_service_started">批注已启动</string>
+    <string name="ga_service_stopped">批注已停止</string>
+    <string name="ga_service_failed">无法启动批注服务</string>
+    <string name="ga_more_hint">更多功能即将推出</string>
+
+    <string name="ga_notification_channel">悬浮批注</string>
+    <string name="ga_notification_channel_desc">保持全局批注在其它应用上层运行</string>
+    <string name="ga_notification_title">全局批注正在运行</string>
+    <string name="ga_notification_text">悬浮画笔已显示在屏幕上</string>
+    <string name="ga_stop">停止</string>
+</resources>

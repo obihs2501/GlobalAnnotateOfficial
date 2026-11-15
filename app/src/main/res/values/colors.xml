@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Design tokens mirrored from Mi Canvas penpicker (light theme). -->
+    <color name="ga_panel_bg">#FFFFFF</color>
+    <color name="ga_capsule_bg">#F5F5F7</color>
+    <color name="ga_text_title">#FF000000</color>
+    <color name="ga_text_primary">#CC000000</color>
+    <color name="ga_text_secondary">#66000000</color>
+    <color name="ga_divider">#1A000000</color>
+    <color name="ga_tab_bg">#1A000000</color>
+    <color name="ga_tab_selected">#33000000</color>
+    <color name="ga_accent">#3482FF</color>
+    <color name="ga_icon_tint">#CC000000</color>
+    <color name="ga_circle_bg">#0A000000</color>
+    <color name="ga_eraser_hint">#66000000</color>
+    <!-- Miuix pressed-state ripple; 12% black on light, 12% white on dark -->
+    <color name="ga_ripple">#1F000000</color>
+    <color name="ga_text_hint">#66000000</color>
+    <color name="ga_swatch_ring">#1F1F1F</color>
+    <!-- Mi Canvas bar / menu tokens, measured from the reference. -->
+    <!-- Mi Canvas penpicker_circle_button_background_color -->
+    <color name="ga_button_bg">#0F000000</color>
+    <color name="ga_icon">#000000</color>
+    <!-- Mi Canvas cp_top_bar_bg (the capsule's topBar) -->
+    <color name="ga_handle">#1A000000</color>
+    <color name="ga_panel_scrim">#33000000</color>
+</resources>

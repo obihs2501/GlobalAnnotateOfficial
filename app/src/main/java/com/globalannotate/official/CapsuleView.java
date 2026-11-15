@@ -1,5 +1,6 @@
 package com.globalannotate.official;
 
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -17,6 +18,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewOutlineProvider;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 
 import java.util.ArrayList;
@@ -100,6 +102,13 @@ public final class CapsuleView extends FrameLayout {
     /** A 124dp lane inside a 108dp capsule. */
     private static final int OVERHANG_DP = 24;
     private static final int INNER_GAP_DP = 8;
+    /**
+     * Official {@code cp_brush_inner_distance}: unselected tools rest this far
+     * out of the lane; the selected tool retracts to its laid-out slot.
+     */
+    private static final float BRUSH_INNER_DISTANCE_DP = 18f;
+    /** Duration of the official tool protrusion swap. */
+    private static final long BRUSH_STEP_MS = 220L;
     private static final float SCREEN_INSET_DP = 16f;
     private static final float MAX_HORIZONTAL_LENGTH_DP = 734f;
     private static final float MAX_VERTICAL_LENGTH_DP = 698f;
@@ -152,7 +161,16 @@ public final class CapsuleView extends FrameLayout {
     private Runnable touchDownListener;
 
     private Types.Dock dock = Types.Dock.TOP;
+    /** Dock the tool boxes were last laid out for; a change snaps the offsets. */
+    private Types.Dock laidOutDock;
     private Types.PenStyle selectedStyle = Types.PenStyle.INK_PEN;
+
+    /** Tool protrusion blend: from {@link #offsetFromStyle} to {@link #offsetToStyle}. */
+    private Types.PenStyle offsetFromStyle = Types.PenStyle.INK_PEN;
+    private Types.PenStyle offsetToStyle = Types.PenStyle.INK_PEN;
+    private float offsetT = 1f;
+    private boolean offsetInitialized;
+    private ValueAnimator offsetAnimator;
 
     /** 0 = full pill, 1 = the minimised ball circle. */
     private float collapse;
@@ -369,7 +387,21 @@ public final class CapsuleView extends FrameLayout {
 
     public void update(Types.PenStyle selected, int color, boolean canUndo, boolean canRedo) {
         if (selected != null) {
-            selectedStyle = selected;
+            if (!offsetInitialized) {
+                // First bind: no protrusion animation from the default style.
+                selectedStyle = selected;
+                offsetFromStyle = selected;
+                offsetToStyle = selected;
+                offsetT = 1f;
+                offsetInitialized = true;
+            } else if (selected != selectedStyle) {
+                // Official m7435II11lli: the old tool slides out while the new
+                // one slides home; both share one animation.
+                offsetFromStyle = selectedStyle;
+                selectedStyle = selected;
+                offsetToStyle = selected;
+                startToolOffsetAnimation();
+            }
         }
         for (ToolView tool : tools) {
             tool.setColor(color);
@@ -561,6 +593,10 @@ public final class CapsuleView extends FrameLayout {
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         recompute();
         hits.clear();
+        if (laidOutDock != dock) {
+            laidOutDock = dock;
+            snapToolOffsets();
+        }
 
         if (isBallLayout()) {
             int d = ballDiameterPx;
@@ -712,21 +748,84 @@ public final class CapsuleView extends FrameLayout {
         ToolView selected = selectedTool();
         float anchorX = collapseCentre.x;
         float anchorY = collapseCentre.y;
+        // Official setDistance(): every tool rests on the distance vector of its
+        // orientation; the active one animates home to (0, 0).
+        float outX = 0f;
+        float outY = 0f;
+        if (!isBallLayout()) {
+            float distance = BRUSH_INNER_DISTANCE_DP * density;
+            if (dock.vertical()) {
+                outX = dock.onLeft() ? -distance : distance;
+            } else {
+                // LEFT/RIGHT map to 90/270 and both horizontal docks to ROT_0,
+                // whose distance vector is +y (I1Iili.m35807I11IIlI).
+                outY = distance;
+            }
+        }
         for (ToolView tool : tools) {
+            float to = tool.style == offsetToStyle ? 0f : 1f;
+            float from = tool.style == offsetFromStyle ? 0f : 1f;
+            float f = from + (to - from) * offsetT;
+            float fx = outX * f;
+            float fy = outY * f;
             if (tool == selected) {
                 float cx = (tool.getLeft() + tool.getRight()) / 2f;
                 float cy = (tool.getTop() + tool.getBottom()) / 2f;
                 tool.setAlpha(1f);
-                tool.setTranslationX((anchorX - cx) * collapse);
-                tool.setTranslationY((anchorY - cy) * collapse);
+                tool.setTranslationX(fx + (anchorX - cx) * collapse);
+                tool.setTranslationY(fy + (anchorY - cy) * collapse);
             } else {
-                tool.setTranslationX(0f);
-                tool.setTranslationY(0f);
+                // Non-selected tools fade out over the same 0..0.5 collapse
+                // span, so their protrusion blend must go with them.
+                tool.setTranslationX(fx * (1f - collapse));
+                tool.setTranslationY(fy * (1f - collapse));
             }
         }
 
         invalidateOutline();
         invalidate();
+    }
+
+    private void startToolOffsetAnimation() {
+        if (offsetAnimator != null) {
+            offsetAnimator.cancel();
+            offsetAnimator = null;
+        }
+        offsetT = 0f;
+        offsetAnimator = ValueAnimator.ofFloat(0f, 1f);
+        offsetAnimator.setDuration(BRUSH_STEP_MS);
+        offsetAnimator.setInterpolator(new DecelerateInterpolator());
+        offsetAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator animation) {
+                offsetT = (float) animation.getAnimatedValue();
+                applyCollapseProgress(collapse);
+            }
+        });
+        offsetAnimator.start();
+        applyCollapseProgress(collapse);
+    }
+
+    /**
+     * Dock changes move every tool box, so the protrusion must snap to the new
+     * direction instead of sliding from a vector that no longer exists.
+     */
+    private void snapToolOffsets() {
+        if (offsetAnimator != null) {
+            offsetAnimator.cancel();
+            offsetAnimator = null;
+        }
+        offsetFromStyle = offsetToStyle;
+        offsetT = 1f;
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        if (offsetAnimator != null) {
+            offsetAnimator.cancel();
+            offsetAnimator = null;
+        }
+        super.onDetachedFromWindow();
     }
 
     // -------------------- drawing --------------------

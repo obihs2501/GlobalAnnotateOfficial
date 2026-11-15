@@ -599,6 +599,9 @@ public final class FloatingService extends Service {
 
         if (nearest.dock.corner()) {
             expanded = false;
+            // Official II11lli shows the minimised ball upright on the four
+            // corner anchors (m3475IlIl1l11 returns 0 for corners).
+            host.ball().setRotation(0f);
             host.capsule().setTransitioning(true);
             morph.beginSnap(nearest.cx, nearest.cy, new Runnable() {
                 @Override
@@ -635,6 +638,10 @@ public final class FloatingService extends Service {
 
         expanded = true;
         capsule.setTransitioning(true);
+        // Official II11lli.m3494lIlilI1iii cancels the ball rotation as the
+        // picker opens: animate() rotation 0 over 180 ms (it rotates only the
+        // brush glyph inside the ball, never the disc).
+        host.ball().animate().rotation(0f).setDuration(180L).start();
         morph.beginExpand(dock, target.x, target.y, new Runnable() {
             @Override
             public void run() {
@@ -659,6 +666,10 @@ public final class FloatingService extends Service {
         cancelRunningMorph();
         final Anchor anchor = nearestAnchor(x, y);
         expanded = false;
+        // Official II11lli.m3484IIii1I sets the ball's brush rotation from the
+        // picker position before the ball appears: LEFT +90, RIGHT -90, all
+        // other positions upright.
+        host.ball().setRotation(ballRotationFor(anchor.dock));
         host.capsule().setTransitioning(true);
         morph.beginCollapse(anchor.cx, anchor.cy, new Runnable() {
             @Override
@@ -796,6 +807,21 @@ public final class FloatingService extends Service {
             return (min + max) / 2f;
         }
         return Math.max(min, Math.min(value, max));
+    }
+
+    /**
+     * Official II11lli.m3475IlIl1l11: the minimised ball's brush is rotated only
+     * on the two vertical edge anchors, +90 on the left and -90 on the right;
+     * top, bottom and the four corners are upright.
+     */
+    private static float ballRotationFor(Types.Dock dock) {
+        if (dock == Types.Dock.LEFT) {
+            return 90f;
+        }
+        if (dock == Types.Dock.RIGHT) {
+            return -90f;
+        }
+        return 0f;
     }
 
     // ------------------------------------------------------------------

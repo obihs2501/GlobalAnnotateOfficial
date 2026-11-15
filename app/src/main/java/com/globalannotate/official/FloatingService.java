@@ -342,7 +342,7 @@ public final class FloatingService extends Service {
                     final Rect visible = morph.visibleRect();
                     final float x = visible != null ? visible.exactCenterX() : morph.ballCx();
                     final float y = visible != null ? visible.exactCenterY() : morph.ballCy();
-                    collapseToNearest(x, y, false);
+                    collapseToNearest(x, y);
                 }
                 return true;
             }
@@ -548,6 +548,12 @@ public final class FloatingService extends Service {
         // what turns the previously dropped events into ink strokes.
         AnnotationInputService.setFloatingService(this);
         AnnotationInputService.setInputSink(inputSink);
+        // The helper only binds its Binder sink after SET_MODULE_ENABLED. The
+        // overlay can also be started from MainActivity / the notification,
+        // which do not pass through GestureLaunchReceiver.startOverlay(), so
+        // assert the state here. Idempotent, and the module defaults to enabled
+        // after a reboot only until it hears otherwise.
+        GestureLaunchReceiver.notifyModuleEnabled(this, true);
         // The helper's split state lives in system_server memory; a switch
         // left on across a reboot is re-asserted once the sink is registered.
         if (switchValue(MoreMenuView.Setting.EVENT_PASSTHROUGH)) {
@@ -1005,7 +1011,7 @@ public final class FloatingService extends Service {
             final Rect visible = morph.visibleRect();
             final float x = visible != null ? visible.exactCenterX() : morph.ballCx();
             final float y = visible != null ? visible.exactCenterY() : morph.ballCy();
-            collapseToNearest(x, y, false);
+            collapseToNearest(x, y);
         }
         final int token = ++paletteShowToken;
         if (morph.isAnimating()) {
@@ -1851,7 +1857,16 @@ public final class FloatingService extends Service {
 
     private void applyPenColor(int color) {
         penColor = color | 0xFF000000;
-        settingsFor(penStyle).color = penColor;
+        // A picked colour belongs to every pen, not only to the selected one.
+        // The capsule swatches and the colour editor are global in this build;
+        // keeping a private colour per pen made the next pen restore its old
+        // colour, which read as "the colour I picked was ignored". Width,
+        // opacity, sensitivity and tip remain per-pen brush parameters.
+        for (Types.PenStyle style : Types.PenStyle.TOOLBAR) {
+            if (!style.eraser) {
+                settingsFor(style).color = penColor;
+            }
+        }
         if (annotationView != null) {
             annotationView.setPenColor(penColor);
         }
@@ -2191,13 +2206,44 @@ public final class FloatingService extends Service {
         } else {
             ballDrag = false;
             capsuleDrag = true;
-            afterCollapseDrag = false;
-            // Collapse towards the anchor nearest the finger, not the capsule
-            // centre, so the ball lands under the hand.
+            afterCollapseDrag = true;
+            // Official capsule-drag hand-over: the capsule becomes a ball under
+            // the finger immediately. No collapse animation, no anchor choice,
+            // so the first MOVE already moves it 1:1.
             final float fingerX = morph.wrapperX() + viewX;
             final float fingerY = morph.wrapperY() + viewY;
-            collapseToNearest(fingerX, fingerY, true);
+            handOverCapsuleToBall(fingerX, fingerY);
         }
+    }
+
+    /**
+     * Instant capsule -> ball hand-over for a capsule drag (official
+     * {@code m3492l1i1ili}). The ball is placed under the finger, the capsule
+     * is hidden, and the brush turns upright while the drag goes on. This is
+     * why an expanded toolbar follows the hand from the first MOVE instead of
+     * waiting for a collapse to finish and an anchor to be picked.
+     */
+    private void handOverCapsuleToBall(float fingerCx, float fingerCy) {
+        if (!started || host == null || morph == null) {
+            return;
+        }
+        dismissPanels();
+        cancelRunningMorph();
+        final float angle = host.capsule().toolRotation();
+        expanded = false;
+        host.ball().animate().cancel();
+        cancelBallRotation();
+        // Start the glyph at the capsule's dock orientation, then settle
+        // upright during the drag (the ball rests upright in this app).
+        host.ball().setRotation(angle);
+        host.capsule().setTransitioning(true);
+        host.capsule().enterBallMode(host.ballSizePx());
+        host.setCapsuleSize(host.ballSizePx(), host.ballSizePx());
+        morph.handOverToBall(fingerCx, fingerCy);
+        afterCollapseDrag = true;
+        collapseGrabDx = 0f;
+        collapseGrabDy = 0f;
+        animateBallRotation(0f, 180L);
     }
 
     private void handleDrag(float rawX, float rawY) {
@@ -2208,11 +2254,9 @@ public final class FloatingService extends Service {
         }
         if (ballDrag) {
             morph.moveBallTo(rawX - grabDx, rawY - grabDy);
-        } else if (capsuleDrag && afterCollapseDrag && !morph.isAnimating()) {
-            // The collapse animation runs first. It lands the ball on the
-            // nearest anchor, which is generally not under the finger; the
-            // offset latched at hand-over keeps the first MOVE relative, so
-            // the ball follows the finger instead of teleporting to it.
+        } else if (capsuleDrag && afterCollapseDrag) {
+            // The hand-over already put the ball under the finger on the drag
+            // DOWN; from here the centre is the finger, so every MOVE is 1:1.
             morph.moveBallTo(rawX - collapseGrabDx, rawY - collapseGrabDy);
         }
     }
@@ -2227,11 +2271,6 @@ public final class FloatingService extends Service {
             lastRawY = rawY;
         }
         if (!ballDrag && !capsuleDrag) {
-            return;
-        }
-        if (capsuleDrag && morph.isAnimating()) {
-            // Keep the release until the collapse has landed.
-            pendingRelease = true;
             return;
         }
         finishBallGesture();
@@ -2259,9 +2298,8 @@ public final class FloatingService extends Service {
 
         if (nearest.dock.corner()) {
             expanded = false;
-            // The minimised ball is upright on every anchor; ease the brush
-            // back to upright instead of popping if it came from a side dock.
-            animateBallRotation(0f, 180L);
+            // The hand-over animation (if any) finishes on its own; no extra
+            // spin is started after the gesture has been released.
             host.capsule().setTransitioning(true);
             morph.beginSnap(nearest.cx, nearest.cy, new Runnable() {
                 @Override
@@ -2300,11 +2338,12 @@ public final class FloatingService extends Service {
         expanded = true;
         capsule.setTransitioning(true);
         // The ball rests upright in this app, but the capsule's tools are
-        // dock-oriented. Turn the ball's glyph to the dock orientation while
-        // the ball is still the visible object (before the 35% hand-over), so
-        // the capsule never appears with a different glyph angle than the ball
-        // it replaces. Only the brush glyph rotates, never the disc.
-        animateBallRotation(dockToolRotation(dock), 140L);
+        // dock-oriented. FloatingMorph turns the ball's glyph to the dock
+        // orientation inside the first 35% of the expand (before the
+        // hand-over), so no rotation is left for after the morph. Cancel any
+        // drag hand-over animation that may still be running so the two
+        // animators cannot fight over the glyph angle.
+        cancelBallRotation();
         morph.beginExpand(dock, target.x, target.y, new Runnable() {
             @Override
             public void run() {
@@ -2322,7 +2361,7 @@ public final class FloatingService extends Service {
         });
     }
 
-    private void collapseToNearest(float x, float y, boolean forCapsuleDrag) {
+    private void collapseToNearest(float x, float y) {
         if (!started || host == null || morph == null) {
             return;
         }
@@ -2331,11 +2370,11 @@ public final class FloatingService extends Service {
         final Anchor anchor = nearestAnchor(x, y);
         expanded = false;
         // The ball hands over in the capsule's current tool orientation (so
-        // nothing flips at the collapse hand-over) and only then settles
-        // upright, which is the resting orientation this app wants. The
-        // capsule keeps its own dock during a collapse, so read its angle
-        // rather than the anchor's: a side-docked capsule can collapse to a
-        // corner anchor.
+        // nothing flips at the collapse hand-over) and FloatingMorph turns it
+        // upright inside the last part of the collapse, while the ball is
+        // already on screen. The capsule keeps its own dock during a collapse,
+        // so read its angle rather than the anchor's: a side-docked capsule
+        // can collapse to a corner anchor.
         host.ball().animate().cancel();   // don't let a running expand animation overwrite the hand-over angle
         cancelBallRotation();
         host.ball().setRotation(host.capsule().toolRotation());
@@ -2351,16 +2390,6 @@ public final class FloatingService extends Service {
                 // tool hit.
                 host.capsule().enterBallMode(host.ballSizePx());
                 host.setCapsuleSize(host.ballSizePx(), host.ballSizePx());
-                // The ball is on screen now; turn the brush upright inside it.
-                animateBallRotation(0f, 180L);
-                if (forCapsuleDrag) {
-                    afterCollapseDrag = true;
-                    // Latch the finger-to-ball offset at hand-over. Without
-                    // this the first MOVE after the collapse pinned the ball
-                    // centre to the finger, a jump of up to half the screen.
-                    collapseGrabDx = Float.isNaN(lastRawX) ? 0f : lastRawX - anchor.cx;
-                    collapseGrabDy = Float.isNaN(lastRawY) ? 0f : lastRawY - anchor.cy;
-                }
                 saveBall(anchor.cx, anchor.cy);
                 if (pendingRelease) {
                     pendingRelease = false;

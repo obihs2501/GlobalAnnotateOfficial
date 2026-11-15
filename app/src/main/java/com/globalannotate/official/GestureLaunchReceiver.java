@@ -248,9 +248,22 @@ public final class GestureLaunchReceiver extends BroadcastReceiver {
             }
         }
         setOverlayRunning(context, false);
-        // Mirrors the old app's onDestroy: stop the system-side hooks and drop
-        // ROOT_SPLIT once the overlay is gone.
-        notifyModule(context, false);
+        // The module stays enabled on purpose: its pen-key and corner-swipe
+        // hooks are what summon the overlay again after it has been stopped.
+        // Disabling it here made the global gesture dead until the app was
+        // opened manually. InputRouter fails open while no Binder sink is
+        // bound, and FloatingService.onDestroy already clears ROOT_SPLIT.
+    }
+
+    /**
+     * Lets the overlay owner (FloatingService) assert the module state when it
+     * starts from a path that does not go through {@link #startOverlay}, e.g.
+     * MainActivity or the notification. Without this the helper keeps running
+     * the hooks but never binds {@code AnnotationInputService}, so ROOT_SPLIT
+     * has no Binder sink and the pen cannot be routed.
+     */
+    public static void notifyModuleEnabled(Context context, boolean enabled) {
+        notifyModule(context, enabled);
     }
 
     /**

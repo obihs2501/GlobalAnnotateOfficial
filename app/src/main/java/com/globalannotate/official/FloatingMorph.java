@@ -43,6 +43,16 @@ public final class FloatingMorph {
     /** Expansion hand-over point: ball is swapped for the capsule here. */
     private static final float EXPAND_SWAP = 0.35f;
 
+    /**
+     * Collapse hand-over point: from here on the ball is drawn over the
+     * shrinking capsule and finishes the turn to upright inside the morph.
+     * The official picker only ever shows one of the two objects, but the ball
+     * is added after the wrapper, so painting it on top of the last part of the
+     * collapse reads as the capsule turning into the ball and removes the
+     * separate rotation that used to run after the morph had landed.
+     */
+    private static final float COLLAPSE_BALL_SHOW = 0.65f;
+
     private final FloatingHost host;
     private final Placement placement;
 
@@ -112,6 +122,32 @@ public final class FloatingMorph {
         placement.onVisibleRect(host.visibleRect(), false);
     }
 
+    /**
+     * Instant capsule-drag hand-over: the capsule disappears and the ball is
+     * under the finger from this frame on, with no collapse animation and no
+     * anchor decision (official {@code m3492l1i1ili}). The caller starts the
+     * brush turn to upright; the gesture continues 1:1 from here.
+     */
+    public void handOverToBall(float ballCx, float ballCy) {
+        stopAnimation();
+        final float radius = ballRadius();
+        float x = ballCx;
+        float y = ballCy;
+        if (screenW > 0) {
+            x = clamp(x, radius, screenW - radius);
+        }
+        if (screenH > 0) {
+            y = clamp(y, radius, screenH - radius);
+        }
+        this.cx = x;
+        this.cy = y;
+        host.setCapsuleVisible(false);
+        host.setBallTopLeft(x - radius, y - radius);
+        host.setBallVisible(true);
+        host.setCollapseProgress(1f);
+        placement.onVisibleRect(host.visibleRect(), false);
+    }
+
     // ------------------------------------------------------------------
     // Morphs
     // ------------------------------------------------------------------
@@ -144,6 +180,14 @@ public final class FloatingMorph {
         final boolean[] switched = new boolean[1];
         final Spring spring = new Spring(EXPAND_DAMPING, EXPAND_RESPONSE);
 
+        // The capsule's tools are drawn at the dock angle. Turn the ball's
+        // brush to that angle while the ball is still the visible object, so
+        // the hand-over frame matches and no rotation is left for after the
+        // morph (official does the same inside the expand transition).
+        final float rotationFrom = host.ball().getRotation();
+        final float rotationSweep = shortestDelta(rotationFrom,
+                host.capsule().toolRotation());
+
         startAnimation(spring, new Frame() {
             @Override
             public void onFrame(float q) {
@@ -156,6 +200,11 @@ public final class FloatingMorph {
 
                 host.setBallCenter(frameCx, frameCy);
                 host.setWrapperTopLeft(wrapperLeft, wrapperTop);
+
+                if (q < EXPAND_SWAP) {
+                    host.ball().setRotation(
+                            rotationFrom + rotationSweep * (q / EXPAND_SWAP));
+                }
 
                 // The hand-over frame must be the ball exactly: the first
                 // visible capsule frame is the p == 1 circle at the ball
@@ -201,9 +250,10 @@ public final class FloatingMorph {
 
     /**
      * Capsule -> ball. The wrapper (and with it the collapsing capsule) flies
-     * from the current slot to the requested ball centre; the capsule is hidden
-     * only on the very last frame, immediately before the ball appears. The two
-     * views are never visible at the same time.
+     * from the current slot to the requested ball centre. From
+     * {@link #COLLAPSE_BALL_SHOW} on the ball is painted on top of the shrinking
+     * capsule and turns upright inside the same morph, so the hand-over is the
+     * last frame of the animation instead of a separate rotation afterwards.
      */
     public void beginCollapse(float targetBallCx, float targetBallCy, Runnable after) {
         stopAnimation();
@@ -220,6 +270,10 @@ public final class FloatingMorph {
         host.setCapsuleVisible(true);
         host.setCollapseProgress(0f);
 
+        // The ball enters at the capsule's current tool angle and turns upright
+        // within the morph, so there is no extra spin after it has landed.
+        final float rotationFrom = host.ball().getRotation();
+        final float rotationSweep = shortestDelta(rotationFrom, 0f);
         final Spring spring = new Spring(EXPAND_DAMPING, EXPAND_RESPONSE);
 
         startAnimation(spring, new Frame() {
@@ -234,6 +288,15 @@ public final class FloatingMorph {
 
                 host.setWrapperTopLeft(wrapperLeft, wrapperTop);
                 host.setCollapseProgress(q);
+
+                if (q >= COLLAPSE_BALL_SHOW) {
+                    final float t = clamp(
+                            (q - COLLAPSE_BALL_SHOW) / (1f - COLLAPSE_BALL_SHOW),
+                            0f, 1f);
+                    host.setBallCenter(frameCx, frameCy);
+                    host.ball().setRotation(rotationFrom + rotationSweep * t);
+                    host.setBallVisible(true);
+                }
                 placement.onVisibleRect(host.visibleRect(), true);
             }
         }, new Runnable() {
@@ -241,6 +304,7 @@ public final class FloatingMorph {
             public void run() {
                 host.setCapsuleVisible(false);
                 host.setBallTopLeft(targetCx - radius, targetCy - radius);
+                host.ball().setRotation(0f);
                 host.setBallVisible(true);
                 host.setCollapseProgress(1f);
 
@@ -403,5 +467,17 @@ public final class FloatingMorph {
             return min;
         }
         return Math.max(min, Math.min(value, max));
+    }
+
+    /** Shortest signed sweep from one glyph angle to another. */
+    private static float shortestDelta(float from, float to) {
+        float delta = to - from;
+        while (delta > 180f) {
+            delta -= 360f;
+        }
+        while (delta < -180f) {
+            delta += 360f;
+        }
+        return delta;
     }
 }

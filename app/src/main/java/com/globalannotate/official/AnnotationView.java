@@ -65,6 +65,10 @@ public final class AnnotationView extends View {
 
     private Stroke active;
     private int activePointerId = MotionEvent.INVALID_POINTER_ID;
+    /** Strokes removed by the last clear(), restorable as one undo action. */
+    private ArrayList<Stroke> clearedSnapshot;
+    /** A redo that should re-apply the clear it undid. */
+    private boolean clearRedoPending;
 
     public AnnotationView(Context context) {
         super(context);
@@ -130,24 +134,41 @@ public final class AnnotationView extends View {
     }
 
     public boolean canUndo() {
-        return !strokes.isEmpty();
+        return !strokes.isEmpty() || clearedSnapshot != null;
     }
 
     public boolean canRedo() {
-        return !redoStack.isEmpty();
+        return !redoStack.isEmpty() || clearRedoPending;
     }
 
     public void undo() {
         finishActive();
+        if (clearedSnapshot != null) {
+            // One clear is one undoable action: bring every stroke back.
+            strokes.addAll(clearedSnapshot);
+            clearedSnapshot = null;
+            clearRedoPending = true;
+            invalidate();
+            return;
+        }
         if (strokes.isEmpty()) {
             return;
         }
+        // Undoing past the clear means the clear is no longer the next redo.
+        clearRedoPending = false;
         redoStack.add(strokes.remove(strokes.size() - 1));
         invalidate();
     }
 
     public void redo() {
         finishActive();
+        if (clearRedoPending) {
+            clearedSnapshot = new ArrayList<>(strokes);
+            strokes.clear();
+            clearRedoPending = false;
+            invalidate();
+            return;
+        }
         if (redoStack.isEmpty()) {
             return;
         }
@@ -158,6 +179,9 @@ public final class AnnotationView extends View {
     public void clear() {
         active = null;
         activePointerId = MotionEvent.INVALID_POINTER_ID;
+        // Clearing is undoable: keep the removed strokes as one action.
+        clearedSnapshot = strokes.isEmpty() ? null : new ArrayList<>(strokes);
+        clearRedoPending = false;
         strokes.clear();
         redoStack.clear();
         invalidate();
@@ -234,8 +258,11 @@ public final class AnnotationView extends View {
         active = new Stroke(style, penColor, penWidth, penAlpha, eraser, stylus);
         active.add(event.getX(index), event.getY(index), event.getPressure(index));
         strokes.add(active);
-        // Any new stroke invalidates the redo branch.
+        // Any new stroke invalidates the redo branch, including a redo of a
+        // clear that was undone.
         redoStack.clear();
+        clearedSnapshot = null;
+        clearRedoPending = false;
     }
 
     private void appendPoint(MotionEvent event, int pointerIndex, int historyIndex) {

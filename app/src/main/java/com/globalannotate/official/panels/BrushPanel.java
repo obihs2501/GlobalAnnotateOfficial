@@ -107,7 +107,9 @@ public final class BrushPanel extends LinearLayout {
         WATER_COLOR(5, 25, 25, "压力灵敏度", false, 72),
         // Official penpicker pixel eraser range is 4..32 (Mi Canvas'
         // SelectAlphaView.setMin(4)/setMax(32)); the value is a radius.
-        ERASER(4, 32, 6, "压力灵敏度", true, 255);
+        // Pixel eraser uses the same pressure rail as the drawing pens. The
+        // value controls how strongly stylus pressure changes the erase radius.
+        ERASER(4, 32, 6, "压感触发", true, 255);
 
         public final int minSize;
         public final int maxSize;
@@ -324,7 +326,9 @@ public final class BrushPanel extends LinearLayout {
         final boolean eraser = tool.eraser;
         tabsRow.setVisibility(eraser ? VISIBLE : GONE);
         sizeRow.setVisibility(eraser && value ? GONE : VISIBLE);
-        sensitivityRow.setVisibility(eraser ? GONE : VISIBLE);
+        // Pixel eraser keeps its pressure-trigger rail; only whole-stroke mode
+        // hides it because there is no raster radius to modulate there.
+        sensitivityRow.setVisibility(eraser && value ? GONE : VISIBLE);
         tipRow.setVisibility(eraser ? GONE : VISIBLE);
         alphaRow.setVisibility(eraser ? GONE : VISIBLE);
         eraserHint.setVisibility(eraser && value ? VISIBLE : GONE);

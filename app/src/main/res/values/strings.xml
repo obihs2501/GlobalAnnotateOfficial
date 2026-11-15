@@ -24,6 +24,10 @@
     <string name="ga_export_saved">已保存</string>
     <string name="ga_export_saved_ink">已保存（仅批注层，未取得截屏）</string>
     <string name="ga_export_failed">保存失败</string>
+    <string name="ga_capture_denied">未获得截屏权限，无法保存当前屏幕</string>
+    <string name="ga_long_progress">长截图：已采集 %1$d 屏</string>
+    <string name="ga_long_partial">长截图已保存（滚动中断，结果不完整）</string>
+    <string name="ga_long_root_needed">长截图需要 root 权限执行滚动；普通截图和 PDF 可不使用 root</string>
 
     <string name="ga_gesture_title">笔身手势</string>
     <string name="ga_gesture_squeeze">轻捏笔身</string>

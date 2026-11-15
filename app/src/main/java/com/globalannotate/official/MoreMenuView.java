@@ -98,9 +98,8 @@ public final class MoreMenuView extends LinearLayout {
         }
     }
 
-    /** The four switch rows, in card order. All default to off. */
+    /** The three supported switch rows, in card order. All default to off. */
     public enum Setting {
-        AUTO_MINIMIZE("自动最小化"),
         FINGER_DRAW("手指涂画"),
         FINGER_FOLLOW("手指跟随"),
         EVENT_PASSTHROUGH("事件透传");

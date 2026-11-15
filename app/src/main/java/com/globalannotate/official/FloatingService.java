@@ -1,5 +1,6 @@
 package com.globalannotate.official;
 
+import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -9,9 +10,11 @@ import android.animation.ValueAnimator;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.Context;
+import android.content.pm.ServiceInfo;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
@@ -21,11 +24,14 @@ import android.graphics.RectF;
 import android.graphics.Region;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.AttachedSurfaceControl;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -37,6 +43,8 @@ import android.view.animation.LinearInterpolator;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import androidx.core.app.ServiceCompat;
+
 import com.globalannotate.official.panels.BrushPanel;
 import com.globalannotate.official.panels.ColorPanel;
 import com.globalannotate.official.panels.PenGesturePanel;
@@ -47,6 +55,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -70,10 +79,20 @@ import java.util.concurrent.TimeUnit;
  */
 public final class FloatingService extends Service {
 
+    private static final String TAG = "GaFloating";
+
     public static final String ACTION_START =
             "com.globalannotate.official.action.START";
     public static final String ACTION_STOP =
             "com.globalannotate.official.action.STOP";
+    /**
+     * Internal hand-off from {@link ScreenCapturePermissionActivity}: the
+     * MediaProjection consent result comes back through this command.
+     */
+    public static final String ACTION_CAPTURE_CONSENT_RESULT =
+            "com.globalannotate.official.action.CAPTURE_CONSENT_RESULT";
+    public static final String EXTRA_CONSENT_RESULT_CODE = "consent_result_code";
+    public static final String EXTRA_CONSENT_DATA = "consent_data";
 
     private static final String CHANNEL_ID = "ga_floating";
     private static final int NOTIFICATION_ID = 0x6A01;
@@ -101,7 +120,25 @@ public final class FloatingService extends Service {
     /** Overlay frames to skip before a screenshot, so the hidden views are gone. */
     private static final long SCREENSHOT_HIDE_MS = 260L;
     /** Root grants can block on a prompt; never leave the worker stuck. */
-    private static final long SCREENSHOT_TIMEOUT_SEC = 6L;
+    private static final long ROOT_SCREENSHOT_TIMEOUT_SEC = 2L;
+    /** A consent dialog that never answers must not leave the overlay hidden. */
+    private static final long CONSENT_TIMEOUT_MS = 30000L;
+    /** Long screenshot: one imported frame per screen, then a stitched PNG. */
+    private static final int MAX_LONG_SCREENS = 12;
+    private static final int MAX_LONG_HEIGHT = 12000;
+    private static final long LONG_SCROLL_MS = 420L;
+    /** Time for the injected swipe to settle before the next frame. */
+    private static final long LONG_SCROLL_SETTLE_MS = 900L;
+    /** The overlap strip is taken at a stable fractional height. */
+    private static final int LONG_STRIP_HEIGHT = 48;
+    private static final float LONG_MIN_SCROLL_FRACTION = 0.18f;
+    private static final float LONG_MAX_SCROLL_FRACTION = 0.60f;
+    private static final float LONG_MATCH_TOLERANCE = 24f;
+    /** Pending export modes (what the consent result should resume). */
+    private static final int EXPORT_NONE = 0;
+    private static final int EXPORT_IMAGE = 1;
+    private static final int EXPORT_PDF = 2;
+    private static final int EXPORT_LONG = 3;
     /** Brush/colour edits are written once the sliders have been quiet this long. */
     private static final long PERSIST_DELAY_MS = 400L;
 
@@ -129,6 +166,26 @@ public final class FloatingService extends Service {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
+    /** Restores the overlay when a consent dialog never answers. */
+    private final Runnable consentTimeout = new Runnable() {
+        @Override
+        public void run() {
+            if (!captureConsentPending) {
+                return;
+            }
+            Log.w(TAG, "screen capture consent timed out");
+            captureConsentPending = false;
+            pendingExportMode = EXPORT_NONE;
+            recycleQuietly(pendingExportInk);
+            pendingExportInk = null;
+            exportJob = false;
+            exportCompleting = false;
+            setOverlayVisible(true);
+            Toast.makeText(FloatingService.this, R.string.ga_capture_denied,
+                    Toast.LENGTH_SHORT).show();
+        }
+    };
+
     private WindowManager windowManager;
     private AnnotationView annotationView;
     private FloatingHost host;
@@ -147,6 +204,30 @@ public final class FloatingService extends Service {
     private boolean pendingRelease;
     /** True while the overlay is hidden for a screenshot: no input at all. */
     private boolean exporting;
+    /** One export at a time, including the consent wait between its halves. */
+    private volatile boolean exportJob;
+    /** Guards duplicate projection stop/error callbacks during the save handoff. */
+    private boolean exportCompleting;
+    /**
+     * Live MediaProjection session. Kept for the whole service run because the
+     * Android 14+ consent token can only create one virtual display; it is
+     * read from export workers, hence volatile.
+     */
+    private volatile ScreenCaptureSession captureSession;
+    /** Whether the foreground service currently carries the mediaProjection type. */
+    private boolean captureForegroundType;
+    /** Root was refused once in this run; do not pay its timeout on every save. */
+    private volatile boolean rootCaptureFailed;
+    /** The consent activity is showing; its result arrives via onStartCommand. */
+    private volatile boolean captureConsentPending;
+    /** Consent was refused; do not ask again until the service restarts. */
+    private volatile boolean captureConsentRefused;
+    /** Export mode waiting for the consent result. */
+    private int pendingExportMode = EXPORT_NONE;
+    /** Ink layer retained while the root/MediaProjection capture is in flight. */
+    private volatile Bitmap pendingExportInk;
+    /** Reused progress toast, so per-screen updates replace rather than queue. */
+    private Toast longProgressToast;
 
     private float grabDx;
     private float grabDy;
@@ -377,7 +458,13 @@ public final class FloatingService extends Service {
             return START_NOT_STICKY;
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification());
+        if (ACTION_CAPTURE_CONSENT_RESULT.equals(action)) {
+            handleCaptureConsentResult(intent);
+            return START_NOT_STICKY;
+        }
+
+        ensureForeground(captureSession != null && !captureSession.isStopped()
+                || captureConsentPending);
 
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, R.string.ga_overlay_needed, Toast.LENGTH_LONG).show();
@@ -394,6 +481,107 @@ public final class FloatingService extends Service {
             }
         }
         return START_NOT_STICKY;
+    }
+
+    private boolean ensureForeground(boolean projectionType) {
+        final int type;
+        if (Build.VERSION.SDK_INT >= 34) {
+            type = projectionType
+                    ? ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                            | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                    : ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+        } else if (Build.VERSION.SDK_INT >= 29 && projectionType) {
+            type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification());
+            captureForegroundType = false;
+            return true;
+        }
+        try {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(), type);
+            captureForegroundType = projectionType;
+            return true;
+        } catch (RuntimeException error) {
+            Log.w(TAG, "startForeground failed for type=" + type, error);
+            if (projectionType) {
+                try {
+                    startForeground(NOTIFICATION_ID, buildNotification());
+                    captureForegroundType = false;
+                } catch (RuntimeException ignored) {
+                    return false;
+                }
+                return false;
+            }
+            return false;
+        }
+    }
+
+    private void handleCaptureConsentResult(Intent intent) {
+        if (!captureConsentPending || pendingExportMode == EXPORT_NONE) {
+            return;
+        }
+        mainHandler.removeCallbacks(consentTimeout);
+        captureConsentPending = false;
+        final int resultCode = intent != null
+                ? intent.getIntExtra(EXTRA_CONSENT_RESULT_CODE, Activity.RESULT_CANCELED)
+                : Activity.RESULT_CANCELED;
+        final Intent resultData = intent != null
+                ? intent.getParcelableExtra(EXTRA_CONSENT_DATA)
+                : null;
+        if (resultCode != Activity.RESULT_OK || resultData == null) {
+            captureConsentRefused = true;
+            ensureForeground(false);
+            finishPendingExport(null);
+            return;
+        }
+        if (!ensureForeground(true)) {
+            captureConsentPending = false;
+            captureConsentRefused = true;
+            finishPendingExport(null);
+            return;
+        }
+        final ScreenCaptureSession existing = captureSession;
+        if (existing != null && !existing.isStopped()) {
+            captureWithProjection(existing, pendingExportMode, pendingExportInk);
+            return;
+        }
+        if (screenW <= 0 || screenH <= 0) {
+            updateScreenMetrics();
+        }
+        final ScreenCaptureSession[] sessionRef = new ScreenCaptureSession[1];
+        final ScreenCaptureSession session = ScreenCaptureSession.start(
+                this, resultCode, resultData, screenW, screenH,
+                getResources().getDisplayMetrics().densityDpi,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (captureSession == sessionRef[0]) {
+                                    captureSession = null;
+                                }
+                                if (exportJob && !exportCompleting) {
+                                    finishPendingExport(null);
+                                }
+                            }
+                        });
+                    }
+                });
+        if (session == null) {
+            ensureForeground(false);
+            finishPendingExport(null);
+            return;
+        }
+        sessionRef[0] = session;
+        captureSession = session;
+        final Bitmap ink = pendingExportInk;
+        final int mode = pendingExportMode;
+        if (ink == null || mode == EXPORT_NONE) {
+            finishPendingExport(null);
+            return;
+        }
+        captureWithProjection(session, mode, ink);
     }
 
     @Override
@@ -420,6 +608,20 @@ public final class FloatingService extends Service {
         discardPanels();
         closePalette(false);
         cancelPaletteAnimation();
+        mainHandler.removeCallbacks(consentTimeout);
+        exportJob = false;
+        exportCompleting = false;
+        final ScreenCaptureSession projection = captureSession;
+        captureSession = null;
+        if (projection != null) {
+            projection.release();
+        }
+        captureConsentPending = false;
+        recycleQuietly(pendingExportInk);
+        pendingExportInk = null;
+        pendingExportMode = EXPORT_NONE;
+        exportJob = false;
+        exportCompleting = false;
         instance = null;
         // The receiver's persisted flag must follow the service, else the next
         // corner swipe believes the overlay is up and refuses to summon it.
@@ -1265,9 +1467,9 @@ public final class FloatingService extends Service {
                     showGesturePanel(panelAnchor);
                     break;
                 case LONG_SCREENSHOT:
+                    startLongScreenshot();
+                    break;
                 default:
-                    Toast.makeText(FloatingService.this, R.string.ga_more_hint,
-                            Toast.LENGTH_SHORT).show();
                     break;
             }
         }
@@ -1498,9 +1700,9 @@ public final class FloatingService extends Service {
         return action != null ? action : gesture.defaultAction;
     }
 
-    /** Saves the annotations over a root screenshot, or as an ink-only file. */
-    private void exportAnnotation(final boolean pdf) {
-        if (annotationView == null) {
+    /** Starts a root-backed long screenshot; scrolling stays entirely in this app. */
+    private void startLongScreenshot() {
+        if (annotationView == null || exportJob) {
             return;
         }
         final Bitmap ink = Exporter.renderFullScreen(annotationView, screenW, screenH);
@@ -1508,51 +1710,470 @@ public final class FloatingService extends Service {
             Toast.makeText(this, R.string.ga_export_failed, Toast.LENGTH_SHORT).show();
             return;
         }
+        exportJob = true;
+        exportCompleting = false;
+        pendingExportMode = EXPORT_LONG;
+        pendingExportInk = ink;
         Toast.makeText(this, R.string.ga_export_running, Toast.LENGTH_SHORT).show();
-
-        // Hide the overlay so the ball, capsule and ink are not baked into the
-        // background; the transparent ink layer was captured before hiding.
         setOverlayVisible(false);
         mainHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                final HandlerThread worker = new HandlerThread("ga-export");
-                worker.start();
-                new Handler(worker.getLooper()).post(new Runnable() {
+                if (exportJob && pendingExportMode == EXPORT_LONG) {
+                    beginLongScreenshot();
+                }
+            }
+        }, SCREENSHOT_HIDE_MS);
+    }
+
+    private void beginLongScreenshot() {
+        if (!exportJob || pendingExportMode != EXPORT_LONG || pendingExportInk == null) {
+            return;
+        }
+        final int width = screenW;
+        final int height = screenH;
+        final Bitmap ink = pendingExportInk;
+        pendingExportInk = null;
+        final HandlerThread worker = new HandlerThread("ga-long-screenshot");
+        worker.start();
+        new Handler(worker.getLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                Bitmap first = null;
+                Bitmap previous = null;
+                Bitmap stitched = null;
+                Bitmap result = null;
+                try {
+                    first = captureScreenRoot();
+                    if (first == null) {
+                        rootCaptureFailed = true;
+                        throw new IOException("root screen capture unavailable");
+                    }
+                    rootCaptureFailed = false;
+                    final int frameWidth = first.getWidth();
+                    final int frameHeight = first.getHeight();
+                    if (frameWidth <= 0 || frameHeight <= 0) {
+                        throw new IOException("invalid initial frame size");
+                    }
+                    final int maxHeight = Math.max(frameHeight,
+                            Math.min(MAX_LONG_HEIGHT, frameHeight * MAX_LONG_SCREENS));
+                    stitched = Bitmap.createBitmap(frameWidth, maxHeight, Bitmap.Config.RGB_565);
+                    Canvas canvas = new Canvas(stitched);
+                    canvas.drawColor(Color.WHITE);
+                    previous = first.copy(Bitmap.Config.RGB_565, false);
+                    if (previous == null || ink.getWidth() <= 0 || ink.getHeight() <= 0) {
+                        throw new IOException("initial frame conversion failed");
+                    }
+                    canvas.drawBitmap(first, 0f, 0f, null);
+                    canvas.drawBitmap(ink, null,
+                            new Rect(0, 0, frameWidth, frameHeight), null);
+                    recycleQuietly(first);
+                    first = null;
+                    recycleQuietly(ink);
+                    int contentHeight = frameHeight;
+                    int capturedScreens = 1;
+                    boolean partial = false;
+                    while (capturedScreens < MAX_LONG_SCREENS && contentHeight < maxHeight) {
+                        if (!rootSwipeUp(frameWidth / 2, Math.round(frameHeight * 0.78f),
+                                Math.round(frameHeight * 0.22f), (int) LONG_SCROLL_MS)) {
+                            partial = true;
+                            break;
+                        }
+                        SystemClock.sleep(LONG_SCROLL_SETTLE_MS);
+                        Bitmap current = captureScreenRoot();
+                        if (current == null) {
+                            partial = true;
+                            break;
+                        }
+                        if (current.getWidth() != frameWidth || current.getHeight() != frameHeight) {
+                            recycleQuietly(current);
+                            partial = true;
+                            break;
+                        }
+                        int overlap = findVerticalOverlap(previous, current);
+                        if (overlap == 0 || overlap >= frameHeight - 8) {
+                            recycleQuietly(current);
+                            break;
+                        }
+                        if (overlap < 0) {
+                            recycleQuietly(current);
+                            partial = true;
+                            break;
+                        }
+                        int appendHeight = frameHeight - overlap;
+                        int allowed = Math.min(appendHeight, maxHeight - contentHeight);
+                        if (allowed <= 0) {
+                            recycleQuietly(current);
+                            break;
+                        }
+                        canvas.drawBitmap(current,
+                                new Rect(0, overlap, frameWidth, overlap + allowed),
+                                new Rect(0, contentHeight, frameWidth, contentHeight + allowed), null);
+                        contentHeight += allowed;
+                        capturedScreens++;
+                        recycleQuietly(previous);
+                        previous = current.copy(Bitmap.Config.RGB_565, false);
+                        recycleQuietly(current);
+                        showLongProgress(capturedScreens);
+                        if (allowed < appendHeight) {
+                            break;
+                        }
+                    }
+                    result = Bitmap.createBitmap(stitched, 0, 0, frameWidth, contentHeight);
+                    final boolean savedPartial = partial;
+                    final Uri uri = Exporter.savePng(FloatingService.this, result, null);
+                    recycleQuietly(result);
+                    result = null;
+                    final Uri savedUri = uri;
+                    mainHandler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            worker.quitSafely();
+                            exportJob = false;
+                            exportCompleting = false;
+                            pendingExportMode = EXPORT_NONE;
+                            setOverlayVisible(true);
+                            int message = savedUri == null ? R.string.ga_export_failed
+                                    : savedPartial ? R.string.ga_long_partial
+                                    : R.string.ga_export_saved;
+                            Toast.makeText(FloatingService.this, message,
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+                } catch (Exception error) {
+                    Log.w(TAG, "long screenshot failed", error);
+                    mainHandler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            worker.quitSafely();
+                            failLongScreenshot();
+                        }
+                    });
+                } finally {
+                    recycleQuietly(first);
+                    recycleQuietly(previous);
+                    recycleQuietly(stitched);
+                    recycleQuietly(result);
+                    recycleQuietly(ink);
+                }
+            }
+        });
+    }
+    private boolean rootSwipeUp(int x, int fromY, int toY, int durationMs) {
+        Process process = null;
+        try {
+            final String command = "input swipe " + Math.max(0, x) + " "
+                    + Math.max(0, fromY) + " " + Math.max(0, x) + " "
+                    + Math.max(0, toY) + " " + Math.max(120, durationMs);
+            process = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
+            if (!process.waitFor(5L, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return false;
+            }
+            return process.exitValue() == 0;
+        } catch (IOException | InterruptedException | SecurityException error) {
+            if (process != null) {
+                process.destroyForcibly();
+            }
+            if (error instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            return false;
+        }
+    }
+
+    /** Matches a strip near the old viewport bottom against the new viewport. */
+    private int findVerticalOverlap(Bitmap previous, Bitmap current) {
+        if (previous == null || current == null || previous.getWidth() != current.getWidth()) {
+            return -1;
+        }
+        final int width = current.getWidth();
+        final int height = current.getHeight();
+        final int strip = Math.min(LONG_STRIP_HEIGHT, Math.max(12, height / 12));
+        final int previousTop = Math.max(0, Math.round(height * 0.68f) - strip / 2);
+        final int minY = Math.max(0, previousTop - Math.round(height * LONG_MAX_SCROLL_FRACTION));
+        final int maxY = Math.min(height - strip,
+                previousTop - Math.round(height * LONG_MIN_SCROLL_FRACTION));
+        if (maxY < minY) {
+            return -1;
+        }
+        final int stepX = Math.max(4, width / 80);
+        final int stepY = Math.max(2, strip / 12);
+        long bestError = Long.MAX_VALUE;
+        int bestY = -1;
+        int samples = 0;
+        for (int y = minY; y <= maxY; y += stepY) {
+            long error = 0L;
+            int count = 0;
+            for (int sy = 2; sy < strip - 2; sy += 4) {
+                for (int x = width / 16; x < width - width / 16; x += stepX) {
+                    final int a = previous.getPixel(x, previousTop + sy);
+                    final int b = current.getPixel(x, y + sy);
+                    error += Math.abs(Color.red(a) - Color.red(b))
+                            + Math.abs(Color.green(a) - Color.green(b))
+                            + Math.abs(Color.blue(a) - Color.blue(b));
+                    count++;
+                }
+            }
+            if (count > 0 && error < bestError) {
+                bestError = error;
+                bestY = y;
+                samples = count;
+            }
+        }
+        if (bestY < 0 || samples == 0) {
+            return -1;
+        }
+        final float meanError = bestError / (float) samples;
+        if (meanError > LONG_MATCH_TOLERANCE) {
+            return -1;
+        }
+        final int scroll = previousTop - bestY;
+        return scroll > 0 ? height - scroll : 0;
+    }
+
+    private void showLongProgress(int screens) {
+        final int count = screens;
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (longProgressToast != null) {
+                    longProgressToast.cancel();
+                }
+                longProgressToast = Toast.makeText(FloatingService.this,
+                        getString(R.string.ga_long_progress, count), Toast.LENGTH_SHORT);
+                longProgressToast.show();
+            }
+        });
+    }
+
+    private void failLongScreenshot() {
+        exportJob = false;
+        exportCompleting = false;
+        pendingExportMode = EXPORT_NONE;
+        recycleQuietly(pendingExportInk);
+        pendingExportInk = null;
+        setOverlayVisible(true);
+        Toast.makeText(this, R.string.ga_long_root_needed, Toast.LENGTH_LONG).show();
+    }
+
+    /** Starts a PNG/PDF export; root is a fast path and projection is the public fallback. */
+    private void exportAnnotation(final boolean pdf) {
+        if (annotationView == null || exportJob) {
+            return;
+        }
+        final Bitmap ink = Exporter.renderFullScreen(annotationView, screenW, screenH);
+        if (ink == null) {
+            Toast.makeText(this, R.string.ga_export_failed, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        exportJob = true;
+        exportCompleting = false;
+        pendingExportMode = pdf ? EXPORT_PDF : EXPORT_IMAGE;
+        pendingExportInk = ink;
+        Toast.makeText(this, R.string.ga_export_running, Toast.LENGTH_SHORT).show();
+
+        // Capture the ink before hiding the overlay. The screen itself is
+        // captured only after the overlay windows have disappeared.
+        setOverlayVisible(false);
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (exportJob) {
+                    beginRegularExportCapture();
+                }
+            }
+        }, SCREENSHOT_HIDE_MS);
+    }
+
+    private void beginRegularExportCapture() {
+        if (!exportJob || pendingExportInk == null) {
+            return;
+        }
+        final ScreenCaptureSession session = captureSession;
+        if (rootCaptureFailed && session != null && !session.isStopped()) {
+            captureWithProjection(session, pendingExportMode, pendingExportInk);
+            return;
+        }
+        if (rootCaptureFailed) {
+            requestProjectionConsent();
+            return;
+        }
+
+        final HandlerThread worker = new HandlerThread("ga-root-export");
+        worker.start();
+        new Handler(worker.getLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                final Bitmap background = captureScreenRoot();
+                if (background == null) {
+                    rootCaptureFailed = true;
+                }
+                mainHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        final Bitmap background = captureScreenRoot();
-                        final Uri uri = pdf
-                                ? Exporter.savePdf(FloatingService.this, null, background, ink)
-                                : Exporter.savePng(FloatingService.this, ink, background);
-                        final boolean withBackground = background != null;
-                        if (background != null) {
-                            background.recycle();
-                        }
-                        ink.recycle();
-                        mainHandler.post(new Runnable() {
-                            @Override
-                            public void run() {
-                                setOverlayVisible(true);
-                                final int message;
-                                if (uri == null) {
-                                    message = R.string.ga_export_failed;
-                                } else if (withBackground) {
-                                    message = R.string.ga_export_saved;
-                                } else {
-                                    // Root was refused: only the ink layer
-                                    // could be written.
-                                    message = R.string.ga_export_saved_ink;
-                                }
-                                Toast.makeText(FloatingService.this, message,
-                                        Toast.LENGTH_SHORT).show();
-                            }
-                        });
                         worker.quitSafely();
+                        if (!exportJob) {
+                            recycleQuietly(background);
+                            return;
+                        }
+                        if (background != null) {
+                            finishPendingExport(background);
+                        } else {
+                            requestProjectionConsent();
+                        }
                     }
                 });
             }
-        }, SCREENSHOT_HIDE_MS);
+        });
+    }
+
+    /** Starts the one-shot system consent dialog, keeping the ink layer alive. */
+    private void requestProjectionConsent() {
+        if (!exportJob || pendingExportInk == null) {
+            return;
+        }
+        final ScreenCaptureSession session = captureSession;
+        if (session != null && !session.isStopped()) {
+            captureWithProjection(session, pendingExportMode, pendingExportInk);
+            return;
+        }
+        if (captureConsentPending) {
+            return;
+        }
+        if (captureConsentRefused) {
+            // The user already rejected the public capture permission in this
+            // service run. Save the transparent layer honestly rather than
+            // opening a dialog on every tap or silently claiming a screenshot.
+            finishPendingExport(null);
+            return;
+        }
+        captureConsentPending = true;
+        if (!ensureForeground(true)) {
+            captureConsentPending = false;
+            captureConsentRefused = true;
+            ensureForeground(false);
+            finishPendingExport(null);
+            return;
+        }
+        try {
+            Intent intent = new Intent(this, ScreenCapturePermissionActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                            | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+            startActivity(intent);
+            mainHandler.removeCallbacks(consentTimeout);
+            mainHandler.postDelayed(consentTimeout, CONSENT_TIMEOUT_MS);
+        } catch (RuntimeException error) {
+            Log.w(TAG, "cannot open screen capture consent", error);
+            captureConsentPending = false;
+            captureConsentRefused = true;
+            finishPendingExport(null);
+        }
+    }
+
+    /** Requests one frame from the already-authorized MediaProjection session. */
+    private void captureWithProjection(final ScreenCaptureSession session,
+                                       final int mode, final Bitmap ink) {
+        if (!exportJob || session == null || session.isStopped() || ink == null) {
+            finishPendingExport(null);
+            return;
+        }
+        setOverlayVisible(false);
+        session.capture(screenW, screenH, getResources().getDisplayMetrics().densityDpi,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        // Refresh only the projection surface; the annotation
+                        // windows remain hidden for the whole capture.
+                        session.nudge();
+                    }
+                }, new ScreenCaptureSession.FrameListener() {
+                    @Override
+                    public void onFrame(Bitmap bitmap) {
+                        if (!exportJob || pendingExportMode != mode) {
+                            recycleQuietly(bitmap);
+                            return;
+                        }
+                        finishPendingExport(bitmap);
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        Log.w(TAG, "projection capture failed: " + message);
+                        finishPendingExport(null);
+                    }
+                });
+    }
+
+    /** Moves the pending export into a worker that writes MediaStore. */
+    private void finishPendingExport(final Bitmap background) {
+        if (!exportJob) {
+            recycleQuietly(background);
+            return;
+        }
+        if (exportCompleting) {
+            recycleQuietly(background);
+            return;
+        }
+        mainHandler.removeCallbacks(consentTimeout);
+        captureConsentPending = false;
+        final int mode = pendingExportMode;
+        final Bitmap ink = pendingExportInk;
+        pendingExportMode = EXPORT_NONE;
+        pendingExportInk = null;
+        if (mode == EXPORT_NONE || ink == null) {
+            recycleQuietly(background);
+            recycleQuietly(ink);
+            exportJob = false;
+            exportCompleting = false;
+            setOverlayVisible(true);
+            return;
+        }
+        exportCompleting = true;
+
+        final HandlerThread worker = new HandlerThread("ga-export-write");
+        worker.start();
+        new Handler(worker.getLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                final Uri uri = mode == EXPORT_PDF
+                        ? Exporter.savePdf(FloatingService.this, null, background, ink)
+                        : Exporter.savePng(FloatingService.this, ink, background);
+                final boolean withBackground = background != null;
+                recycleQuietly(background);
+                recycleQuietly(ink);
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        worker.quitSafely();
+                        exportJob = false;
+                        exportCompleting = false;
+                        setOverlayVisible(true);
+                        final int message;
+                        if (uri == null) {
+                            message = R.string.ga_export_failed;
+                        } else if (withBackground) {
+                            message = R.string.ga_export_saved;
+                        } else {
+                            message = R.string.ga_export_saved_ink;
+                        }
+                        Toast.makeText(FloatingService.this, message,
+                                Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        });
+    }
+
+    private static void recycleQuietly(Bitmap bitmap) {
+        if (bitmap == null || bitmap.isRecycled()) {
+            return;
+        }
+        try {
+            bitmap.recycle();
+        } catch (RuntimeException ignored) {
+            // Best effort while a cancelled export is being torn down.
+        }
     }
 
     private void setOverlayVisible(boolean visible) {
@@ -1571,6 +2192,9 @@ public final class FloatingService extends Service {
         // arrives through the Binder sink and fingers belong to the app below.
         setWindowTouchable(annotationView, visible && !AnnotationInputService.isSplitActive());
         setWindowTouchable(proxy, visible);
+        if (host != null) {
+            setWindowTouchable(host, visible);
+        }
     }
 
     /**
@@ -1632,7 +2256,7 @@ public final class FloatingService extends Service {
      * Root screenshot through {@code su -c screencap -p}. KernelSU may show a
      * grant prompt the first time, so a watchdog kills the process instead of
      * leaving the export worker blocked. Returns null when root is refused or
-     * the PNG does not decode; the export then saves the ink layer alone.
+     * the PNG does not decode; the export then falls back to MediaProjection.
      */
     private static Bitmap captureScreenRoot() {
         Process process = null;
@@ -1640,6 +2264,7 @@ public final class FloatingService extends Service {
             process = Runtime.getRuntime().exec(new String[]{"su", "-c", "screencap -p"});
             final ByteArrayOutputStream buffer = new ByteArrayOutputStream(1 << 22);
             final InputStream stream = process.getInputStream();
+            final InputStream errorStream = process.getErrorStream();
             final Thread reader = new Thread(new Runnable() {
                 @Override
                 public void run() {
@@ -1654,19 +2279,41 @@ public final class FloatingService extends Service {
                     }
                 }
             }, "ga-screencap-reader");
+            final Thread errorReader = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    final byte[] chunk = new byte[4096];
+                    try {
+                        while (errorStream.read(chunk) > 0) {
+                            // Drain stderr so a failed su cannot block the process.
+                        }
+                    } catch (IOException ignored) {
+                        // Best effort.
+                    }
+                }
+            }, "ga-screencap-error-reader");
             reader.start();
-            if (!process.waitFor(SCREENSHOT_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+            errorReader.start();
+            if (!process.waitFor(ROOT_SCREENSHOT_TIMEOUT_SEC, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 reader.join(500L);
+                errorReader.join(500L);
                 return null;
             }
             reader.join(2000L);
+            errorReader.join(500L);
+            if (process.exitValue() != 0) {
+                return null;
+            }
             final byte[] png = buffer.toByteArray();
             return png.length > 0
                     ? BitmapFactory.decodeByteArray(png, 0, png.length) : null;
         } catch (IOException | InterruptedException | SecurityException error) {
             if (process != null) {
                 process.destroyForcibly();
+            }
+            if (error instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
             }
             return null;
         }
@@ -1952,6 +2599,7 @@ public final class FloatingService extends Service {
         annotationView.setPenColor(penColor);
         annotationView.setPenWidth(strokeWidthPx(penStyle, settings.width));
         annotationView.setPenAlpha(Math.round(settings.alpha));
+        annotationView.setEraserSensitivity(settings.sensitivity);
         final boolean wholeStroke = getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getBoolean(ERASER_WHOLE_KEY, false);
         if (annotationView.isStrokeEraseEnabled() != wholeStroke) {

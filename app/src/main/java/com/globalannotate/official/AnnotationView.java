@@ -41,6 +41,8 @@ public final class AnnotationView extends View {
         final int alpha;
         final boolean eraser;
         final boolean stylus;
+        /** Pressure activation threshold captured with this eraser stroke. */
+        final float eraserSensitivity;
         final ArrayList<float[]> points = new ArrayList<>();
         /**
          * Stable per-stroke noise seed. Grain and mottling patterns are
@@ -51,7 +53,7 @@ public final class AnnotationView extends View {
         RenderCache renderCache;
 
         Stroke(long seq, Types.PenStyle style, int color, float baseWidth, int alpha,
-               boolean eraser, boolean stylus) {
+               boolean eraser, boolean stylus, float eraserSensitivity) {
             this.seq = seq;
             this.style = style;
             this.color = color;
@@ -59,6 +61,7 @@ public final class AnnotationView extends View {
             this.alpha = alpha;
             this.eraser = eraser;
             this.stylus = stylus;
+            this.eraserSensitivity = eraserSensitivity;
             this.seed = nextSeed = nextSeed * 1103515245 + 12345;
         }
 
@@ -154,6 +157,11 @@ public final class AnnotationView extends View {
     private int activePointerId = MotionEvent.INVALID_POINTER_ID;
     /** Whole-stroke eraser (笔画橡皮) instead of the raster eraser stroke. */
     private boolean strokeEraseEnabled;
+    /**
+     * Pixel eraser pressure response, 0..1. Zero keeps a constant-radius
+     * eraser; one uses the full 0.45..1.35 pressure range.
+     */
+    private float eraserSensitivity = 0.5f;
     /** In-flight whole-stroke erase gesture; null when not erasing strokes. */
     private Edit activeErase;
 
@@ -223,6 +231,15 @@ public final class AnnotationView extends View {
 
     public boolean isStrokeEraseEnabled() {
         return strokeEraseEnabled;
+    }
+
+    /** Sets the stylus pressure activation threshold for the pixel eraser, from 0 to 1. */
+    public void setEraserSensitivity(float sensitivity) {
+        eraserSensitivity = Math.max(0f, Math.min(1f, sensitivity));
+    }
+
+    public float getEraserSensitivity() {
+        return eraserSensitivity;
     }
 
     public Types.PenStyle penStyle() {
@@ -495,7 +512,7 @@ public final class AnnotationView extends View {
         final boolean eraser = style.eraser;
         final boolean stylus = event.getToolType(index) == MotionEvent.TOOL_TYPE_STYLUS;
         active = new Stroke(nextStrokeSeq++, style, penColor, penWidth, penAlpha,
-                eraser, stylus);
+                eraser, stylus, eraserSensitivity);
         active.add(event.getX(index), event.getY(index), event.getPressure(index));
         strokes.add(active);
         // A new stroke is a genuinely new edit and invalidates the redo branch.
@@ -657,7 +674,7 @@ public final class AnnotationView extends View {
         final int count = stroke.points.size();
         if (count == 1) {
             final float[] point = stroke.points.get(0);
-            final float radius = width * 0.5f * pressureFactor(stroke, point[2]);
+            final float radius = width * 0.5f * eraserPressureFactor(stroke, point[2]);
             erasePaint.setStyle(Paint.Style.FILL);
             canvas.drawCircle(point[0], point[1], radius, erasePaint);
             erasePaint.setStyle(Paint.Style.STROKE);
@@ -678,7 +695,7 @@ public final class AnnotationView extends View {
         float[] previous = stroke.points.get(0);
         for (int i = 1; i < count; i++) {
             float[] point = stroke.points.get(i);
-            erasePaint.setStrokeWidth(width * pressureFactor(stroke, point[2]));
+            erasePaint.setStrokeWidth(width * eraserPressureFactor(stroke, point[2]));
             canvas.drawLine(previous[0], previous[1], point[0], point[1], erasePaint);
             previous = point;
         }
@@ -881,12 +898,7 @@ public final class AnnotationView extends View {
      */
     private static float pressureFactor(Stroke stroke, float pressure) {
         if (stroke.eraser) {
-            // Original eraser response, kept bit-for-bit.
-            if (!stroke.stylus) {
-                return 1f;
-            }
-            final float p = Math.max(0.1f, Math.min(1f, pressure));
-            return 0.45f + 0.9f * p;
+            return eraserPressureFactor(stroke, pressure);
         }
         if (!stroke.stylus) {
             return 1f;
@@ -894,10 +906,8 @@ public final class AnnotationView extends View {
         final float p = Math.max(0.1f, Math.min(1f, pressure));
         switch (stroke.style) {
             case BALLPOINT:
-                // Slight response: the line stays a ballpoint line.
                 return 0.88f + 0.18f * p;
             case INK_PEN:
-                // Strong response; the outline taper adds the pinched ends.
                 return 0.45f + 0.9f * p;
             case PENCIL:
                 return 0.72f + 0.45f * p;
@@ -907,6 +917,26 @@ public final class AnnotationView extends View {
             default:
                 return 1f;
         }
+    }
+
+    /**
+     * The rail is a pressure activation point, not an extra size control.
+     * Pressure below it leaves the eraser at its minimum 45% radius; pressure
+     * above it ramps smoothly to 135% at maximum force. Finger input stays
+     * full-size because it has no meaningful pen pressure.
+     */
+    private static float eraserPressureFactor(Stroke stroke, float pressure) {
+        if (!stroke.stylus) {
+            return 1f;
+        }
+        final float threshold = stroke.eraserSensitivity;
+        final float raw = Math.max(0f, Math.min(1f, pressure));
+        if (threshold >= 0.999f) {
+            return raw >= 0.999f ? 1.35f : 0.45f;
+        }
+        final float activated = Math.max(0f, Math.min(1f,
+                (raw - threshold) / (1f - threshold)));
+        return 0.45f + 0.9f * activated;
     }
 
     // ---------------------------------------------------------------

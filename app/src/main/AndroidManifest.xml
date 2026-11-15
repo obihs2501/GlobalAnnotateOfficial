@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
@@ -27,7 +28,7 @@
         <service
             android:name=".FloatingService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|mediaProjection">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Global annotation overlay that draws on top of other apps" />
@@ -39,6 +40,16 @@
         <service
             android:name=".AnnotationInputService"
             android:exported="true" />
+
+        <!-- Transparent hop that owns the MediaProjection consent dialog. The
+             service starts it when a screenshot needs a projection session;
+             the result is forwarded back through onStartCommand. -->
+        <activity
+            android:name=".ScreenCapturePermissionActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <!-- Explicit broadcasts from the LSPosed helper. The token extra is
              checked by the receiver; the actions stay exactly in sync with

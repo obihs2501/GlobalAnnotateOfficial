@@ -60,8 +60,9 @@ public final class Exporter {
     }
 
     /**
-     * Composites {@code ink} over {@code background} and writes the result as a
-     * PNG into {@code Pictures/GlobalAnnotate}.
+     * Writes the composited image as a PNG into {@code Pictures/GlobalAnnotate}.
+     * When only one bitmap is supplied it is compressed directly, avoiding an
+     * unnecessary full-size copy (important for long screenshots).
      *
      * @param context    any context; only its content resolver is used
      * @param ink        the transparent annotation layer, may be {@code null}
@@ -88,7 +89,12 @@ public final class Exporter {
                 return null;
             }
 
-            flattened = flatten(background, ink);
+            if (background != null && ink != null) {
+                flattened = flatten(background, ink);
+                ownsFlattened = true;
+            } else {
+                flattened = background != null ? background : ink;
+            }
             if (flattened == null) {
                 Log.w(TAG, "savePng: flatten returned null");
                 return null;
@@ -131,7 +137,9 @@ public final class Exporter {
             deleteQuietly(context, uri);
             return null;
         } finally {
-            recycleQuietly(flattened);
+            if (ownsFlattened) {
+                recycleQuietly(flattened);
+            }
         }
     }
 

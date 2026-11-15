@@ -153,7 +153,7 @@ public final class InputRouter {
                 }
                 // Horizontal-dominant: a diagonal down-left drag from the
                 // top-right must not steal the control-centre pull.
-                if (inward < vertical * 1.2f) return;
+                if (inward < vertical) return;
                 final long now = SystemClock.uptimeMillis();
                 if (now - lastLaunchMs < CompatProfile.CORNER_COOLDOWN_MS) return;
                 fingerFired = true;

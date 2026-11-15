@@ -2,7 +2,9 @@
 <resources>
     <string name="xposed_module_name">全局批注 · 笔手势与输入分流</string>
     <string name="xposed_module_desc">全局笔身双击/轻捏唤出批注；按工具类型把触控笔事件交给批注层、手指事件交还底层应用。需 HyperOS 3/4 + LSPosed，且必须在真机上核对 hook 点。</string>
-    <string name="module_status">模块已安装。请在 LSPosed 中启用并勾选作用域，然后重启。总开关由主应用发送广播控制。</string>
+    <string name="module_status">模块已安装。请在 LSPosed 中启用并勾选作用域，然后重启。开关修改后立即生效，重启后保持。</string>
+    <string name="pen_gestures_title">全局笔身手势</string>
+    <string name="pen_gestures_summary">开启后，模块会在系统层监听触控笔的轻捏 / 双击 / 上下滑，用来唤起批注、切换工具。关闭后这些按键完全交还系统和当前应用，不再被拦截（模块仍可用右上角 / 右下角内划唤起）。</string>
     <string-array name="xposed_scope">
         <item>android</item>
         <item>com.android.systemui</item>

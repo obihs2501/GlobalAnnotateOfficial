@@ -23,6 +23,7 @@ final class XActions {
     static final String GESTURE = "com.globalannotate.action.GESTURE";
     static final String SET_SPLIT_MODE = "com.globalannotate.action.SET_SPLIT_MODE";
     static final String SET_MODULE_ENABLED = "com.globalannotate.action.SET_MODULE_ENABLED";
+    static final String SET_PEN_GESTURES = "com.globalannotate.action.SET_PEN_GESTURES";
 
     static final String EXTRA_TOKEN = "token";
     static final String EXTRA_GESTURE = "gesture";

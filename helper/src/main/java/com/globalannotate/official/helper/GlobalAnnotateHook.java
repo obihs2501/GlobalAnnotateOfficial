@@ -41,6 +41,13 @@ public final class GlobalAnnotateHook extends XposedModule {
             log(Log.ERROR, TAG, "system Context unavailable; hooks not installed");
             return;
         }
+        // Restore the user's switches before any hook can see an event. The
+        // value lives in system_server itself because the helper app's
+        // BOOT_COMPLETED delivery is not guaranteed on HyperOS.
+        ModulePrefs.init();
+        ModuleState.penGesturesEnabled = ModulePrefs.penGesturesEnabled();
+        log(Log.INFO, TAG, "pen gestures enabled=" + ModuleState.penGesturesEnabled);
+
         AppBridge bridge = new AppBridge(context);
         registerControlReceiver(context, bridge);
         GestureLauncher.install(this, classLoader, bridge);
@@ -130,12 +137,18 @@ public final class GlobalAnnotateHook extends XposedModule {
                     if (enabled) bridge.bindIfNeeded();
                     bridge.setSplitActive(enabled);
                     log(Log.INFO, TAG, "split mode=" + enabled);
+                } else if (XActions.SET_PEN_GESTURES.equals(action)) {
+                    ModuleState.penGesturesEnabled = enabled;
+                    ModulePrefs.setPenGesturesEnabled(enabled);
+                    if (!enabled) GestureLauncher.cancelPendingGesture();
+                    log(Log.INFO, TAG, "pen gestures enabled=" + enabled);
                 }
             }
         };
         IntentFilter filter = new IntentFilter();
         filter.addAction(XActions.SET_MODULE_ENABLED);
         filter.addAction(XActions.SET_SPLIT_MODE);
+        filter.addAction(XActions.SET_PEN_GESTURES);
 
         // onSystemServerStarting runs before ActivityManagerService is
         // published. Context.registerReceiver() goes through IActivityManager,

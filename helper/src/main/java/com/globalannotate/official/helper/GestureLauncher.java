@@ -85,6 +85,10 @@ public final class GestureLauncher {
     private static Object handle(XposedInterface.Chain chain, AppBridge bridge, Object consumed)
             throws Throwable {
         if (!ModuleState.enabled) return chain.proceed();
+        // The global pen-gesture listener is a user switch. When it is off the
+        // key events must flow to the ROM untouched, so the pen's own squeeze
+        // shortcuts keep working; consume nothing and swallow nothing.
+        if (!ModuleState.penGesturesEnabled) return chain.proceed();
         List<Object> args = chain.getArgs();
         Object first = args.isEmpty() ? null : args.get(0);
         if (!(first instanceof KeyEvent)) return chain.proceed();
@@ -138,6 +142,16 @@ public final class GestureLauncher {
         Runnable pending = pendingSingle;
         if (pending != null) handler.removeCallbacks(pending);
         pendingSingle = null;
+    }
+
+    /**
+     * Drops a squeeze that is still inside its double-tap window. Called when
+     * the user turns the listener off, so a gesture recognised just before the
+     * switch flipped cannot still launch annotation.
+     */
+    static void cancelPendingGesture() {
+        cancelPending();
+        lastSqueezeDownMs = 0L;
     }
 
     private static List<Method> findMethods(Class<?> clazz, String name) {

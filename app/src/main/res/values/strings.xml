@@ -3,7 +3,7 @@
     <string name="app_name">全局批注</string>
 
     <string name="ga_explanation">开启后，屏幕上会出现一支悬浮画笔。点击小球展开画笔胶囊，
-可以直接在任意应用上书写批注。批注画布覆盖整个屏幕，再次点击小球区域可展开/收起画笔。</string>
+可以直接在任意应用上书写批注。长按小球（或轻捏笔身）打开弧形笔盘。批注画布覆盖整个屏幕，再次点击小球区域可展开/收起画笔。</string>
 
     <string name="ga_start">开始批注</string>
     <string name="ga_exit">停止批注</string>

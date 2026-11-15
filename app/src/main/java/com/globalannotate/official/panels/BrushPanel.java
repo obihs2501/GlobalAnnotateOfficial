@@ -10,6 +10,7 @@ import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -64,16 +65,17 @@ import com.globalannotate.official.R;
  * ROW TITLES / ORDER ................ BrushPanel.kt:149-175
  * SIZE LABEL TRUNCATES .............. BrushPanel.kt:147
  * ALPHA PERCENT alpha*100/255 ....... BrushPanel.kt:172-174
- * TRACK_HEIGHT_DP 28 ................ PickerBar.kt:56-62
- * THUMB_DIAMETER_DP 24 .............. PickerBar.kt:56-62
- * THUMB_RING_DP 8.14 ................ PickerBar.kt:56-62
- * THUMB_BORDER_DP 0.7 ............... PickerBar.kt:56-66
- * THUMB_MARGIN_DP 1.81 .............. PickerBar.kt:56-66
- * trackBg 0x0F000000 ............... penpicker_colors.xml (pk_property_seekbar_bg)
- * ACCENT 0xFF3482FF ................. PickerBar.kt:80; penpicker_colors.xml (pen_menu_eraser_button_selected_color)
- * trackBorder 0x0D000000 ........... PickerBar.kt:107-108
- * thumbBorder 0x0F000000 ........... PickerBar.kt:125-126
- * CHECKER 0xFF9A9A9A / 0xFFD6D6D6 ... PickerBar.kt:163-182
+ * TRACK_HEIGHT_DP 28 ................ pk_seekbar_height (penpicker dimen)
+ * THUMB_STROKE_DP 3 ................. I1llI1.lIIIlll (3dp * thumb_scale, = 1.0)
+ * THUMB ring radius ................. I1llI1.onDraw: height/2 - stroke/2
+ * THUMB travel ...................... I1llI1.onDraw: width - height (margin = 0dp,
+ *                                     pk_seekbar_thumb_margin)
+ * ALPHA background .................. I1llI1: LayerDrawable {pk_alpha_bg,
+ *                                     GradientDrawable {0x00FFFFFF, pen color},
+ *                                     corner radius penpicker_seekbar_thumb_radius/2}
+ * trackBg 0x0F000000 ............... penpicker_colors.xml (pk_property_seekbar_bg;
+ *                                     SelectPropertyView.setupBackground)
+ * ACCENT 0xFF3482FF ................. SelectPropertyView.lIIIlll ring paint
  * PREVIEW_SAMPLES 48 ................ StrokePreview.kt:45
  * PREVIEW_MARGIN_FACTOR 0.6 ......... StrokePreview.kt:54-57
  * PREVIEW_MARGIN_EXTRA_DP 2 ......... StrokePreview.kt:54
@@ -175,18 +177,23 @@ public final class BrushPanel extends LinearLayout {
     private static final int MAX_ALPHA = 255;
     private static final int MAX_TIP = 4;
 
-    // Rail geometry, from PickerBar.
-    private static final float TRACK_HEIGHT_DP = 28f;
-    private static final float THUMB_DIAMETER_DP = 24f;
-    private static final float THUMB_RING_DP = 8.14f;
-    private static final float THUMB_BORDER_DP = 0.7f;
-    private static final float THUMB_MARGIN_DP = 1.81f;
+    /**
+     * Rail geometry, from the official penpicker SeekBar (p249l1lII1Il.I1llI1
+     * and com.xiaomi.penpicker.popup.SelectPropertyView):
+     * <ul>
+     *   <li>the track is the full view height ({@code pk_seekbar_height} 28dp);</li>
+     *   <li>the thumb is a bare ring of {@code height/2 - stroke/2} with a 3dp
+     *       stroke, no fill and no border;</li>
+     *   <li>at 0/100% the ring's outer edge is flush with the track ends
+     *       ({@code pk_seekbar_thumb_margin} is 0dp, so travel = width - height);</li>
+     *   <li>the alpha track is {@code pk_alpha_bg}'s translucent checker with a
+     *       {@code 0x00FFFFFF -> pen colour} gradient on top;</li>
+     *   <li>the property track is a solid {@code pk_property_seekbar_bg} capsule.</li>
+     * </ul>
+     */
+    private static final float THUMB_STROKE_DP = 3f;
     private final int trackBg;
-    private final int trackBorder;
-    private final int thumbBorder;
     private static final int ACCENT = 0xFF3482FF;
-    private static final int CHECKER_A = 0xFF9A9A9A;
-    private static final int CHECKER_B = 0xFFD6D6D6;
 
     // Live preview, from StrokePreview.
     private static final int PREVIEW_SAMPLES = 48;
@@ -273,8 +280,6 @@ public final class BrushPanel extends LinearLayout {
         this.panelBg = pickerColor(context, R.color.penpicker_background_color, 0xFFFFFFFF);
         this.rowTextColor = pickerColor(context, R.color.penpicker_pen_set_text, 0xCC000000);
         this.trackBg = pickerColor(context, R.color.pk_property_seekbar_bg, 0x0F000000);
-        this.trackBorder = pickerColor(context, R.color.creation_seekbar_border, 0x0D000000);
-        this.thumbBorder = pickerColor(context, R.color.pk_property_seekbar_bg, 0x0F000000);
         this.closeColor = pickerColor(context, R.color.penpicker_pen_set_text, 0xCC000000);
         this.tabRowBg = pickerColor(context, R.color.pk_property_seekbar_bg, 0x0F000000);
         this.tabSelectedBg = pickerColor(context, R.color.creation_eraser_tab_item, 0xFFFFFFFF);
@@ -819,11 +824,12 @@ public final class BrushPanel extends LinearLayout {
         final int kind;
         private final Paint trackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint thumbPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint checkerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF trackRect = new RectF();
-        private final Path clipPath = new Path();
+        /** Official {@code pk_alpha_bg}: translucent checker under the gradient. */
+        private final Drawable alphaBg;
+        private LinearGradient gradient;
+        private int gradientWidth = -1;
+        private int gradientColor;
         private float progress;
         private int min;
         private int max = 100;
@@ -834,7 +840,15 @@ public final class BrushPanel extends LinearLayout {
             this.mode = mode;
             this.kind = kind;
             ringPaint.setStyle(Paint.Style.STROKE);
-            borderPaint.setStyle(Paint.Style.STROKE);
+            Drawable bg = null;
+            if (mode == RAIL_ALPHA) {
+                try {
+                    bg = context.getDrawable(R.drawable.pk_alpha_bg);
+                } catch (Resources.NotFoundException missing) {
+                    bg = null;
+                }
+            }
+            alphaBg = bg;
             setClickable(true);
         }
 
@@ -881,25 +895,31 @@ public final class BrushPanel extends LinearLayout {
         @Override
         protected void onDraw(Canvas canvas) {
             int w = getWidth();
-            if (w <= 0) {
+            int h = getHeight();
+            if (w <= 0 || h <= 0) {
                 return;
             }
-            float height = getHeight();
-            float trackHeight = dpf(TRACK_HEIGHT_DP);
-            float cy = height / 2f;
-            float radius = trackHeight / 2f;
-            trackRect.set(0f, cy - trackHeight / 2f, w, cy + trackHeight / 2f);
+            float cy = h / 2f;
+            // The official SeekBar background fills the whole view: the track
+            // is exactly pk_seekbar_height tall (28dp), not a shorter capsule.
+            float radius = h / 2f;
+            trackRect.set(0f, 0f, w, h);
 
-            Shader shader = null;
             if (mode == RAIL_ALPHA) {
-                drawChecker(canvas, trackRect, radius);
-                shader = new LinearGradient(0f, 0f, w, 0f,
-                        Color.TRANSPARENT, baseColor | 0xFF000000,
-                        Shader.TileMode.CLAMP);
-            }
-
-            if (shader != null) {
-                trackPaint.setShader(shader);
+                // I1llI1: LayerDrawable {pk_alpha_bg, GradientDrawable
+                // {0x00FFFFFF, pen colour}} stretched over the view bounds.
+                if (alphaBg != null) {
+                    alphaBg.setBounds(0, 0, w, h);
+                    alphaBg.draw(canvas);
+                }
+                final int color = baseColor | 0xFF000000;
+                if (gradient == null || gradientWidth != w || gradientColor != color) {
+                    gradient = new LinearGradient(0f, 0f, w, 0f,
+                            0x00FFFFFF, color, Shader.TileMode.CLAMP);
+                    gradientWidth = w;
+                    gradientColor = color;
+                }
+                trackPaint.setShader(gradient);
                 canvas.drawRoundRect(trackRect, radius, radius, trackPaint);
                 trackPaint.setShader(null);
             } else {
@@ -907,47 +927,15 @@ public final class BrushPanel extends LinearLayout {
                 canvas.drawRoundRect(trackRect, radius, radius, trackPaint);
             }
 
-            borderPaint.setStrokeWidth(dpf(1.5f));
-            borderPaint.setColor(trackBorder);
-            canvas.drawRoundRect(trackRect, radius, radius, borderPaint);
-
-            float thumbDiameter = dpf(THUMB_DIAMETER_DP);
-            float thumbRadius = thumbDiameter / 2f;
-            float margin = dpf(THUMB_MARGIN_DP);
-            float travel = Math.max(0f, w - thumbDiameter - 2f * margin);
-            float cx = margin + thumbRadius + progress * travel;
-            float ringWidth = dpf(THUMB_RING_DP);
-            float ringCentre = thumbRadius - ringWidth / 2f;
-
-            thumbPaint.setStyle(Paint.Style.FILL);
-            thumbPaint.setColor(mode == RAIL_ALPHA ? baseColor : Color.TRANSPARENT);
-            canvas.drawCircle(cx, cy, ringCentre, thumbPaint);
-
-            ringPaint.setStrokeWidth(ringWidth);
+            // Thumb: a bare ring, stroke 3dp, outer diameter equal to the
+            // track height, centred with margin 0 (travel = width - height).
+            float stroke = dpf(THUMB_STROKE_DP);
+            float ringRadius = radius - stroke / 2f;
+            float travel = Math.max(0f, w - h);
+            float cx = radius + progress * travel;
+            ringPaint.setStrokeWidth(stroke);
             ringPaint.setColor(mode == RAIL_ALPHA ? Color.WHITE : ACCENT);
-            canvas.drawCircle(cx, cy, ringCentre, ringPaint);
-
-            borderPaint.setStrokeWidth(dpf(THUMB_BORDER_DP));
-            borderPaint.setColor(thumbBorder);
-            canvas.drawCircle(cx, cy, thumbRadius - dpf(THUMB_BORDER_DP) / 2f, borderPaint);
-        }
-
-        private void drawChecker(Canvas canvas, RectF track, float radius) {
-            float cell = Math.max(track.height() / 3f, 2f * density);
-            int saved = canvas.save();
-            clipPath.reset();
-            clipPath.addRoundRect(track, radius, radius, Path.Direction.CW);
-            canvas.clipPath(clipPath);
-            int i = 0;
-            for (float x = track.left; x < track.right; x += cell) {
-                float right = Math.min(x + cell, track.right);
-                checkerPaint.setColor(i % 2 == 0 ? CHECKER_A : CHECKER_B);
-                canvas.drawRect(x, track.top, right, track.top + cell, checkerPaint);
-                checkerPaint.setColor(i % 2 == 0 ? CHECKER_B : CHECKER_A);
-                canvas.drawRect(x, track.top + cell, right, track.bottom, checkerPaint);
-                i++;
-            }
-            canvas.restoreToCount(saved);
+            canvas.drawCircle(cx, cy, ringRadius, ringPaint);
         }
 
         @Override
@@ -973,10 +961,10 @@ public final class BrushPanel extends LinearLayout {
         }
 
         private void updateFromX(float x) {
-            float thumbDiameter = dpf(THUMB_DIAMETER_DP);
-            float margin = dpf(THUMB_MARGIN_DP);
-            float travel = getWidth() - thumbDiameter - 2f * margin;
-            float value = travel <= 0f ? 0f : (x - margin - thumbDiameter / 2f) / travel;
+            // I1llI1: thumb centre = height/2 + progress * (width - height).
+            float h = getHeight();
+            float travel = getWidth() - h;
+            float value = travel <= 0f ? 0f : (x - h / 2f) / travel;
             setProgress(value);
             BrushPanel.this.onRailProgress(this);
         }

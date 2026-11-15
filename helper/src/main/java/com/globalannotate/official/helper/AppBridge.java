@@ -27,6 +27,14 @@ public final class AppBridge {
     private long lastActivityFallbackMs = 0L;
     private long fgsRetryAfterMs = 0L;
 
+    // Foreground query for the finger corner summon. Cached briefly because
+    // filterInputEvent runs on the input thread for every event.
+    private String foregroundPackage;
+    private long foregroundCheckedAt = 0L;
+    private boolean foregroundQueryLogged = false;
+    private String homePackage;
+    private boolean homeResolved = false;
+
     private final ServiceConnection connection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
@@ -64,6 +72,92 @@ public final class AppBridge {
     public int[] displaySize() {
         android.util.DisplayMetrics dm = context.getResources().getDisplayMetrics();
         return new int[]{dm.widthPixels, dm.heightPixels};
+    }
+
+    public float displayDensity() {
+        return context.getResources().getDisplayMetrics().density;
+    }
+
+    /**
+     * True while the resolved home (launcher) activity is on top.
+     *
+     * <p>The finger corner summon only fires on the launcher: the same inward
+     * swipe is the system back gesture elsewhere, and opening the annotation
+     * layer while also navigating back is not acceptable. The top-level query
+     * is cached for half a second because it is called from the input thread
+     * on DOWN and then once per MOVE that crosses the threshold.</p>
+     */
+    public boolean isLauncherForeground() {
+        final long now = SystemClock.uptimeMillis();
+        if (now - foregroundCheckedAt >= 500L) {
+            foregroundCheckedAt = now;
+            foregroundPackage = queryForegroundPackage();
+        }
+        final String home = resolveHomePackage();
+        return foregroundPackage != null && home != null
+                && foregroundPackage.equals(home);
+    }
+
+    private String resolveHomePackage() {
+        if (!homeResolved) {
+            homeResolved = true;
+            try {
+                Intent intent = new Intent(Intent.ACTION_MAIN)
+                        .addCategory(Intent.CATEGORY_HOME);
+                android.content.pm.ResolveInfo info = context.getPackageManager()
+                        .resolveActivity(intent,
+                                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
+                if (info != null && info.activityInfo != null) {
+                    homePackage = info.activityInfo.packageName;
+                    GaLog.i("home package=" + homePackage);
+                }
+            } catch (Throwable error) {
+                GaLog.e("home package lookup failed: " + error);
+            }
+        }
+        return homePackage;
+    }
+
+    /**
+     * Top activity of the focused root task. Both calls are hidden framework
+     * APIs, so they are reflective; a failure only disables the launcher
+     * guard (the gesture then stays off) and is logged once.
+     */
+    private String queryForegroundPackage() {
+        try {
+            Class<?> atmClass = Class.forName("android.app.ActivityTaskManager");
+            Object service = atmClass.getMethod("getService").invoke(null);
+            if (service == null) return null;
+            Object info = service.getClass()
+                    .getMethod("getFocusedRootTaskInfo").invoke(service);
+            String pkg = topPackageOf(info);
+            if (pkg != null) return pkg;
+            // Fallback for ROMs where the focused-root query is unavailable:
+            // ask for the single most recent task instead.
+            Object tasks = service.getClass()
+                    .getMethod("getTasks", int.class, boolean.class, boolean.class)
+                    .invoke(service, 1, false, false);
+            if (tasks instanceof java.util.List) {
+                java.util.List<?> list = (java.util.List<?>) tasks;
+                if (!list.isEmpty()) return topPackageOf(list.get(0));
+            }
+        } catch (Throwable error) {
+            if (!foregroundQueryLogged) {
+                foregroundQueryLogged = true;
+                GaLog.e("foreground query failed: " + error);
+            }
+        }
+        return null;
+    }
+
+    private static String topPackageOf(Object info) throws Exception {
+        if (info == null) return null;
+        java.lang.reflect.Field field = info.getClass().getField("topActivity");
+        Object value = field.get(info);
+        if (value instanceof ComponentName) {
+            return ((ComponentName) value).getPackageName();
+        }
+        return null;
     }
 
     public float cornerWidthPx() {

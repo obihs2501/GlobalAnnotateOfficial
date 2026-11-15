@@ -37,6 +37,16 @@ public final class InputRouter {
     private static float startY = 0f;
     private static long lastLaunchMs = 0L;
 
+    /**
+     * Finger corner-swipe state. Separate from the pen observation so a finger
+     * stream and the existing pen-tip stream cannot clobber each other.
+     */
+    private static boolean fingerTracked = false;
+    private static boolean fingerArmed = false;
+    private static boolean fingerFired = false;
+    private static float fingerStartX = 0f;
+    private static float fingerStartY = 0f;
+
     private InputRouter() {
     }
 
@@ -100,13 +110,99 @@ public final class InputRouter {
                 || tool == MotionEvent.TOOL_TYPE_ERASER;
 
         // Observation only — never consumes because of the corner gesture.
-        if (isStylus) observeCorner(event, bridge);
+        if (isStylus) {
+            observeCorner(event, bridge);
+        } else if (tool == MotionEvent.TOOL_TYPE_FINGER) {
+            // Huawei-style summon: an inward horizontal swipe from the
+            // top-right or bottom-right corner while the launcher is showing.
+            // Finger events are never dropped; the gesture only launches the
+            // overlay. Only a horizontally dominant swipe fires, so a downward
+            // pull from the top-right still opens the control centre.
+            observeFingerCorner(event, bridge);
+        }
 
         if (ModuleState.splitMode && ModuleState.sink != null && isStylus) {
             bridge.forwardStylus(event);
             return dropped; // pen is intentionally routed to the annotation layer
         }
         return chain.proceed();
+    }
+
+    /**
+     * Finger counterpart of {@link #observeCorner(MotionEvent, AppBridge)}.
+     * Only an inward, horizontally dominant swipe fires, so a vertical pull
+     * from the top-right (control centre) still reaches the system untouched.
+     * The launcher check keeps the right-edge back gesture in ordinary apps
+     * from opening the annotation layer.
+     */
+    private static void observeFingerCorner(MotionEvent event, AppBridge bridge) {
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                beginFingerGesture(event, bridge);
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (!fingerTracked) {
+                    beginFingerGesture(event, bridge);
+                    return;
+                }
+                if (!fingerArmed || fingerFired) return;
+                final float inward = fingerStartX - event.getX();
+                final float vertical = Math.abs(event.getY() - fingerStartY);
+                if (inward <= CompatProfile.SWIPE_THRESHOLD_DP * bridge.displayDensity()) {
+                    return;
+                }
+                // Horizontal-dominant: a diagonal down-left drag from the
+                // top-right must not steal the control-centre pull.
+                if (inward < vertical * 1.2f) return;
+                final long now = SystemClock.uptimeMillis();
+                if (now - lastLaunchMs < CompatProfile.CORNER_COOLDOWN_MS) return;
+                fingerFired = true;
+                if (!bridge.isLauncherForeground()) {
+                    GaLog.i("finger corner ignored: launcher not foreground");
+                    return;
+                }
+                lastLaunchMs = now;
+                GaLog.i("finger corner swipe fired: inward=" + (int) inward + "px");
+                bridge.launch();
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                fingerArmed = false;
+                fingerFired = false;
+                fingerTracked = false;
+                break;
+            default:
+                break;
+        }
+    }
+
+    private static void beginFingerGesture(MotionEvent event, AppBridge bridge) {
+        final int[] size = bridge.displaySize();
+        final int screenWidth = size[0];
+        final int screenHeight = size[1];
+        final float density = bridge.displayDensity();
+        final float inset = CompatProfile.FINGER_CORNER_INSET_DP * density;
+        final float width = Math.min(CompatProfile.CORNER_WIDTH_DP * density, screenWidth);
+        final float height = Math.min(CompatProfile.FINGER_CORNER_HEIGHT_DP * density,
+                screenHeight);
+        final float x = event.getX();
+        final float y = event.getY();
+
+        fingerTracked = true;
+        fingerFired = false;
+        fingerStartX = x;
+        fingerStartY = y;
+        final boolean rightEdge = x >= screenWidth - width;
+        final boolean topRight = rightEdge && y >= inset && y <= inset + height;
+        final boolean bottomRight = rightEdge
+                && y >= screenHeight - inset - height
+                && y <= screenHeight - inset;
+        fingerArmed = topRight || bottomRight;
+        if (fingerArmed) {
+            GaLog.i("finger corner armed at (" + (int) x + "," + (int) y + ") "
+                    + (topRight ? "top-right" : "bottom-right")
+                    + " screen=" + screenWidth + "x" + screenHeight);
+        }
     }
 
     private static void observeCorner(MotionEvent event, AppBridge bridge) {

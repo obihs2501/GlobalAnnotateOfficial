@@ -124,6 +124,10 @@ public final class GlobalAnnotateHook extends XposedModule {
                     log(Log.INFO, TAG, "module enabled=" + enabled);
                 } else if (XActions.SET_SPLIT_MODE.equals(action)) {
                     ModuleState.splitMode = enabled;
+                    // ROOT_SPLIT needs the Binder sink. Binding here as well
+                    // means the switch works even when the overlay was started
+                    // from MainActivity, which never sends SET_MODULE_ENABLED.
+                    if (enabled) bridge.bindIfNeeded();
                     bridge.setSplitActive(enabled);
                     log(Log.INFO, TAG, "split mode=" + enabled);
                 }
@@ -132,10 +136,37 @@ public final class GlobalAnnotateHook extends XposedModule {
         IntentFilter filter = new IntentFilter();
         filter.addAction(XActions.SET_MODULE_ENABLED);
         filter.addAction(XActions.SET_SPLIT_MODE);
-        try {
-            context.registerReceiver(receiver, filter, null, new Handler(Looper.getMainLooper()));
-        } catch (Throwable error) {
-            log(Log.ERROR, TAG, "registerReceiver failed: " + error);
-        }
+
+        // onSystemServerStarting runs before ActivityManagerService is
+        // published. Context.registerReceiver() goes through IActivityManager,
+        // which is still null there: on this ROM the call threw
+        // "registerReceiverWithFeature ... on a null object reference", so the
+        // receiver never existed and neither SET_MODULE_ENABLED nor
+        // SET_SPLIT_MODE ever reached the module (ROOT_SPLIT stayed dead).
+        // The main looper only starts dispatching after system_server has
+        // finished starting, so posting one registration is enough; a short
+        // retry covers a service that is still being published.
+        final Handler handler = new Handler(Looper.getMainLooper());
+        handler.post(new Runnable() {
+            private int attempts;
+
+            @Override
+            public void run() {
+                try {
+                    context.registerReceiver(receiver, filter, null, handler,
+                            Context.RECEIVER_EXPORTED);
+                    log(Log.INFO, TAG, "control receiver registered");
+                } catch (Throwable error) {
+                    attempts++;
+                    if (attempts < 50) {
+                        log(Log.WARN, TAG, "registerReceiver retry " + attempts
+                                + ": " + error);
+                        handler.postDelayed(this, 200L);
+                    } else {
+                        log(Log.ERROR, TAG, "registerReceiver failed: " + error);
+                    }
+                }
+            }
+        });
     }
 }

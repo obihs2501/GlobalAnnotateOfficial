@@ -40,6 +40,16 @@ public final class CompatProfile {
     public static final long CORNER_COOLDOWN_MS = 800L;
 
     /**
+     * Finger corner-summon zone (Huawei-style). The small inset stays inside
+     * the physical corner while skipping the very edge (where the system's own
+     * gesture monitors live); only an inward, horizontally dominant swipe
+     * fires, so a downward pull from the top-right still opens the control
+     * centre.
+     */
+    public static final int FINGER_CORNER_INSET_DP = 8;
+    public static final int FINGER_CORNER_HEIGHT_DP = 140;
+
+    /**
      * Grace period for the LAUNCH broadcast to reach a live app before
      * AppBridge starts the service from system_server itself.
      */

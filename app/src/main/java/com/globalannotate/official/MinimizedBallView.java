@@ -22,16 +22,14 @@ import com.globalannotate.official.R;
  * Direct Java port of Mi Canvas' minimized brush ball
  * ({@code p452lilii.II11I}; decompiled source {@code p452lilii/II11I.java}).
  *
- * <p>The resting ball is 108dp: Mi Canvas' {@code MinimizedBallView} field
- * defaults to 96dp, but the MAXIMIZE picker collapses to its capsule
- * cross-axis, which is 108dp ({@code II11lli.m3506llIllil()} returns 108dp
- * except for the MIDSIZE ui state). This app has no MIDSIZE mode, so 108dp is
- * the default. The brush box is still scaled against the official 96dp
- * reference: {@code cp_brush_width_normal} (eraser:
- * {@code cp_brush_width_large}) x {@code cp_brush_height} at an 8dp top
- * margin, all times {@code ballSize / 96dp}. At 108dp that is 54dp (eraser
- * 76.5dp) x 139.5dp at a 9dp margin, {@code TOP | CENTER_HORIZONTAL},
- * {@code FIT_CENTER}.
+ * <p>The resting ball is 96dp, the official floating picker's size: the picker
+ * runs in the MIDSIZE ui state and collapses to its capsule cross-axis, which
+ * is 96dp ({@code II11lli.m3506llIllil()}; only the in-app MAXIMIZE picker
+ * uses 108dp). The brush box is scaled against the same 96dp reference:
+ * {@code cp_brush_width_normal} (eraser: {@code cp_brush_width_large}) x
+ * {@code cp_brush_height} at an 8dp top margin, all times
+ * {@code ballSize / 96dp}. At 96dp that is 48dp (eraser 68dp) x 124dp at an
+ * 8dp margin, {@code TOP | CENTER_HORIZONTAL}, {@code FIT_CENTER}.
  *
  * <p>The disc is painted with {@code penpicker_background_color}, clipped by
  * a circular outline, with elevation 0. A GestureDetector turns a single tap
@@ -40,8 +38,8 @@ import com.globalannotate.official.R;
  */
 public final class MinimizedBallView extends FrameLayout {
 
-    /** Resting ball diameter: 108dp in MAXIMIZE (96dp is MIDSIZE only). */
-    public static final float BALL_SIZE_DP = 108f;
+    /** Resting ball diameter: 96dp, the official floating-picker MIDSIZE size. */
+    public static final float BALL_SIZE_DP = 96f;
     /** Official MinimizedBallView diameter: the brush box scale reference. */
     private static final float BRUSH_REFERENCE_DP = 96f;
     /** ImageView top margin used by the MAXIMIZE layout, before scaling. */

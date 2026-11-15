@@ -31,10 +31,10 @@ import java.util.List;
  * Java port of the old Kotlin {@code ToolbarView}: the floating pen capsule.
  *
  * <p>The capsule is one absolutely positioned {@link FrameLayout}. Its content
- * follows Mi Canvas' own table: a 108dp thick pill with a 108dp head (undo /
- * redo), a 124dp tool lane and a 204dp tail (six colour slots and the more
- * button). The vertical docks transpose the same table, as the official
- * picker does.</p>
+ * follows Mi Canvas' own table: a 96dp thick pill (the floating picker's
+ * MIDSIZE cross-axis) with a 108dp head (undo / redo), a 124dp tool lane and a
+ * 204dp tail (six colour slots and the more button). The vertical docks
+ * transpose the same table, as the official picker does.</p>
  *
  * <p>The collapse morph is the important part. The view's outline provider is
  * driven directly by {@link #setCollapseProgress(float)}: the full round rect
@@ -83,8 +83,14 @@ public final class CapsuleView extends FrameLayout {
     }
 
     // -------------------- geometry, from the old ToolbarView companion --------------------
-    /** Capsule thickness (MAXIMIZE): 108dp. */
-    private static final float CAPSULE_DP = 108f;
+    /**
+     * Capsule thickness in the floating picker (MIDSIZE): 96dp. The official
+     * picker collapses to its cross-axis, so the ball is 96dp too;
+     * {@code I1Iili.lili11l()} uses 96dp for MIDSIZE and 108dp only for the
+     * in-app MAXIMIZE picker. The 124dp tool lane still overhangs the 96dp
+     * thickness and is clipped by the pill, exactly as in the official code.
+     */
+    private static final float CAPSULE_DP = 96f;
     /** Horizontal head (undo / redo area). */
     private static final float HEAD_DP = 108f;
     /** Tail: two 44dp colour rows plus the 48dp more button and an 8dp edge. */
@@ -107,7 +113,7 @@ public final class CapsuleView extends FrameLayout {
     private static final int HANDLE_SHORT_DP = 4;
     private static final int HANDLE_TOP_DP = 4;
     private static final int HANDLE_EDGE_DP = 4;
-    /** A 124dp lane inside a 108dp capsule. */
+    /** A 124dp lane inside a 96dp capsule (the lane overhangs and is clipped). */
     private static final int OVERHANG_DP = 24;
     private static final int INNER_GAP_DP = 8;
     /**
@@ -133,8 +139,6 @@ public final class CapsuleView extends FrameLayout {
     private static final int BUTTON_BG = 0x0F000000;
     private static final int ICON_COLOR = 0xCC000000;
     private static final int ICON_DISABLED = 0x33000000;
-    /** Invented: a very light pill behind the selected tool. */
-    private static final int SELECTED_BG = 0x10000000;
     /** Ring used where a near-white swatch would vanish on the capsule. */
     private static final int NEAR_WHITE_RING = 0x66000000;
     private static final int[] WHEEL_COLORS = {
@@ -260,7 +264,7 @@ public final class CapsuleView extends FrameLayout {
                 }
                 // The official lIil11 provider: edge lerp towards the collapse
                 // anchor plus the independent radius override that takes the
-                // 108dp capsule down to the minimised ball.
+                // 96dp capsule down to the minimised ball.
                 float ballR = ballDiameterPx > 0 ? ballDiameterPx / 2f : r;
                 float rr = r + (ballR - r) * p;
                 float cx = width >= 2f * rr
@@ -693,8 +697,8 @@ public final class CapsuleView extends FrameLayout {
 
             // Row-major 3x2 grid with the colour wheel in the last cell:
             // (red|yellow), (blue|black), (white|wheel).
-            int innerX = dock.onLeft() ? dp(10) : dp(54);
-            int outerX = dock.onLeft() ? dp(54) : dp(10);
+            int innerX = dock.onLeft() ? dp(6) : dp(50);
+            int outerX = dock.onLeft() ? dp(50) : dp(6);
             swatches.get(0).layout(innerX, c + dp(8), innerX + slotBox, c + dp(8) + slotBox);
             swatches.get(1).layout(outerX, c + dp(8), outerX + slotBox, c + dp(8) + slotBox);
             swatches.get(2).layout(innerX, c + dp(52), innerX + slotBox, c + dp(52) + slotBox);
@@ -714,7 +718,7 @@ public final class CapsuleView extends FrameLayout {
             // Row-major 2x3 grid, colour wheel last:
             // (red|yellow|blue) then (black|white|wheel).
             int[] xs = {8, 52, 96, 8, 52, 96};
-            int[] ys = {10, 10, 10, 54, 54, 54};
+            int[] ys = {6, 6, 6, 50, 50, 50};
             for (int i = 0; i < 6; i++) {
                 int x = c + dp(xs[i]);
                 int y = dp(ys[i]);
@@ -1145,7 +1149,6 @@ public final class CapsuleView extends FrameLayout {
     /** One tool: brush artwork, with the seat orientation handled locally. */
     private final class ToolView extends View {
         final Types.PenStyle style;
-        private final Paint pill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private Drawable art;
         private int color = Color.BLACK;
         private boolean ballArt;
@@ -1202,14 +1205,6 @@ public final class CapsuleView extends FrameLayout {
             int h = getHeight();
             if (w <= 0 || h <= 0) {
                 return;
-            }
-            if (checked && !ballArt && collapse <= 0.001f) {
-                // Hidden once the capsule starts collapsing: at p == 1 the
-                // selected tool is the brush inside the ball, not a pill.
-                pill.setColor(SELECTED_BG);
-                float pad = dp(2);
-                canvas.drawRoundRect(new RectF(pad, pad, w - pad, h - pad),
-                        dp(16), dp(16), pill);
             }
             if (art == null) {
                 return;

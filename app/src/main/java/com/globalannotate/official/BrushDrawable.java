@@ -35,7 +35,7 @@ import com.globalannotate.official.R;
  * 124dp at a top margin of 8dp inside the 96dp reference ball, {@code
  * FIT_CENTER}, then cropped by the ball circle. That is the exact arithmetic
  * of the Kotlin {@code fit()} branch for {@code drawDisc || ballArt}; the box
- * scales with the actual ball, which is 108dp in this app. The official
+ * scales with the actual ball, which is 96dp in this app. The official
  * {@code MinimizedBallView}, however, performs the box placement in its
  * ImageView layout; when this drawable receives exactly that brush-box bounds
  * (as {@code MinimizedBallView}'s ImageView does), the box is already applied,
@@ -51,7 +51,7 @@ public final class BrushDrawable extends Drawable {
     /**
      * Official MinimizedBallView reference diameter. The 48x124dp box at an
      * 8dp top is defined for a 96dp ball; the actual resting ball here is
-     * 108dp, and the box scales with the bounds.
+     * 96dp, and the box scales with the bounds.
      */
     private static final float REFERENCE_BALL_SIZE_DP = 96f;
     /** Official {@code cp_brush_width_normal}, {@code cp_brush_width_large}. */

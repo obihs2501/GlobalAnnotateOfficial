@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "GlobalAnnotateOfficial"
 include(":app")
+include(":helper")

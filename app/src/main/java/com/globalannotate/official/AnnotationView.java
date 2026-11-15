@@ -27,15 +27,18 @@ public final class AnnotationView extends View {
         final Types.PenStyle style;
         final int color;
         final float baseWidth;
+        /** Pen opacity 3..255 captured when the stroke started. */
+        final int alpha;
         final boolean eraser;
         final boolean stylus;
         final ArrayList<float[]> points = new ArrayList<>();
 
-        Stroke(Types.PenStyle style, int color, float baseWidth,
+        Stroke(Types.PenStyle style, int color, float baseWidth, int alpha,
                boolean eraser, boolean stylus) {
             this.style = style;
             this.color = color;
             this.baseWidth = baseWidth;
+            this.alpha = alpha;
             this.eraser = eraser;
             this.stylus = stylus;
         }
@@ -55,6 +58,8 @@ public final class AnnotationView extends View {
     private Types.PenStyle penStyle = Types.PenStyle.BALLPOINT;
     private int penColor = Types.FIXED_COLORS[3];
     private float penWidth;
+    /** Opacity from the brush panel, Mi Canvas' raw 3..255 units. */
+    private int penAlpha = 255;
 
     private Stroke active;
     private int activePointerId = MotionEvent.INVALID_POINTER_ID;
@@ -97,12 +102,21 @@ public final class AnnotationView extends View {
         penWidth = Math.max(1f, width);
     }
 
+    /** Pen opacity in Mi Canvas' raw 3..255 units; existing strokes keep theirs. */
+    public void setPenAlpha(int alpha) {
+        penAlpha = Math.max(3, Math.min(255, alpha));
+    }
+
     public Types.PenStyle penStyle() {
         return penStyle;
     }
 
     public int penColor() {
         return penColor;
+    }
+
+    public int penAlpha() {
+        return penAlpha;
     }
 
     public boolean canUndo() {
@@ -199,7 +213,7 @@ public final class AnnotationView extends View {
         final Types.PenStyle style = penStyle;
         final boolean eraser = style.eraser;
         final boolean stylus = event.getToolType(index) == MotionEvent.TOOL_TYPE_STYLUS;
-        active = new Stroke(style, penColor, penWidth, eraser, stylus);
+        active = new Stroke(style, penColor, penWidth, penAlpha, eraser, stylus);
         active.add(event.getX(index), event.getY(index), event.getPressure(index));
         strokes.add(active);
         // Any new stroke invalidates the redo branch.
@@ -282,7 +296,8 @@ public final class AnnotationView extends View {
     private Paint prepareInkPaint(Stroke stroke) {
         inkPaint.setXfermode(null);
         inkPaint.setColor(stroke.color);
-        inkPaint.setAlpha(alphaFactor(stroke.style));
+        // Panel opacity times the style's own factor (long-standing look).
+        inkPaint.setAlpha(stroke.alpha * alphaFactor(stroke.style) / 255);
         return inkPaint;
     }
 

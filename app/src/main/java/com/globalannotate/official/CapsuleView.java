@@ -74,7 +74,12 @@ public final class CapsuleView extends FrameLayout {
 
         void onDrag(float dx, float dy, float rawX, float rawY);
 
-        void onDragEnd();
+        /**
+         * Release at {@code (rawX, rawY)}. The release point is the finger's
+         * last position, which decides the anchor; the last MOVE before it can
+         * be tens of pixels away, so UP carries its own coordinates.
+         */
+        void onDragEnd(float rawX, float rawY);
     }
 
     // -------------------- geometry, from the old ToolbarView companion --------------------
@@ -970,7 +975,7 @@ public final class CapsuleView extends FrameLayout {
             case MotionEvent.ACTION_UP: {
                 if (dragging) {
                     if (dragListener != null) {
-                        dragListener.onDragEnd();
+                        dragListener.onDragEnd(event.getRawX(), event.getRawY());
                     }
                 } else if (ballGesture()) {
                     if (ballTapListener != null) {
@@ -984,7 +989,7 @@ public final class CapsuleView extends FrameLayout {
             }
             case MotionEvent.ACTION_CANCEL: {
                 if (dragging && dragListener != null) {
-                    dragListener.onDragEnd();
+                    dragListener.onDragEnd(event.getRawX(), event.getRawY());
                 }
                 dragging = false;
                 return true;

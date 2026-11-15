@@ -32,6 +32,28 @@
                 android:value="Global annotation overlay that draws on top of other apps" />
         </service>
 
+        <!-- Bound from system_server by the LSPosed helper. No permission is
+             declared (the helper has none); onBind() itself accepts only the
+             system, root, shell and own UIDs. -->
+        <service
+            android:name=".AnnotationInputService"
+            android:exported="true" />
+
+        <!-- Explicit broadcasts from the LSPosed helper. The token extra is
+             checked by the receiver; the actions stay exactly in sync with
+             the helper's XActions constants. -->
+        <receiver
+            android:name=".GestureLaunchReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.globalannotate.action.LAUNCH" />
+                <action android:name="com.globalannotate.action.TOGGLE" />
+                <action android:name="com.globalannotate.action.GESTURE" />
+                <action android:name="com.globalannotate.action.SET_SPLIT_MODE" />
+                <action android:name="com.globalannotate.action.SET_MODULE_ENABLED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

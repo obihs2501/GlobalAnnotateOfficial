@@ -142,9 +142,22 @@ public final class ScreenCaptureSession {
             }
         };
         // Android 14+ requires a callback before createVirtualDisplay().
-        projection.registerCallback(callback, handler);
+        try {
+            projection.registerCallback(callback, handler);
+        } catch (RuntimeException error) {
+            Log.w(TAG, "registerCallback failed", error);
+            disposeQuietly(null, projection, callback);
+            return null;
+        }
 
-        final ImageReader reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, MAX_IMAGES);
+        final ImageReader reader;
+        try {
+            reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, MAX_IMAGES);
+        } catch (RuntimeException error) {
+            Log.w(TAG, "ImageReader creation failed", error);
+            disposeQuietly(null, projection, callback);
+            return null;
+        }
         final VirtualDisplay display;
         try {
             display = projection.createVirtualDisplay(DISPLAY_NAME, w, h, d,
@@ -170,10 +183,12 @@ public final class ScreenCaptureSession {
 
     private static void disposeQuietly(ImageReader reader, MediaProjection projection,
                                        MediaProjection.Callback callback) {
-        try {
-            reader.close();
-        } catch (RuntimeException ignored) {
-            // Best effort.
+        if (reader != null) {
+            try {
+                reader.close();
+            } catch (RuntimeException ignored) {
+                // Best effort.
+            }
         }
         try {
             projection.unregisterCallback(callback);

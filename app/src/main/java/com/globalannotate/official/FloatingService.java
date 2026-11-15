@@ -119,8 +119,10 @@ public final class FloatingService extends Service {
     private static final long PANEL_HIDE_MS = 180L;
     /** Overlay frames to skip before a screenshot, so the hidden views are gone. */
     private static final long SCREENSHOT_HIDE_MS = 260L;
-    /** Root grants can block on a prompt; never leave the worker stuck. */
+    /** Root grants can block on a prompt; regular exports fall back quickly. */
     private static final long ROOT_SCREENSHOT_TIMEOUT_SEC = 2L;
+    /** The first long capture has no projection fallback for root authorization. */
+    private static final long LONG_ROOT_SCREENSHOT_TIMEOUT_SEC = 15L;
     /** A consent dialog that never answers must not leave the overlay hidden. */
     private static final long CONSENT_TIMEOUT_MS = 30000L;
     /** Long screenshot: one imported frame per screen, then a stitched PNG. */
@@ -131,7 +133,10 @@ public final class FloatingService extends Service {
     private static final long LONG_SCROLL_SETTLE_MS = 900L;
     /** The overlap strip is taken at a stable fractional height. */
     private static final int LONG_STRIP_HEIGHT = 48;
-    private static final float LONG_MAX_SCROLL_FRACTION = 0.60f;
+    /** The swipe below moves content by roughly 56% of one viewport. */
+    private static final float LONG_EXPECTED_SCROLL_FRACTION = 0.56f;
+    /** Allow nested-scroll/clamping variance without accepting an unrelated row. */
+    private static final float LONG_SCROLL_TOLERANCE_FRACTION = 0.12f;
     private static final float LONG_MATCH_TOLERANCE = 24f;
     /** Pending export modes (what the consent result should resume). */
     private static final int EXPORT_NONE = 0;
@@ -1746,7 +1751,7 @@ public final class FloatingService extends Service {
                     if (!exportJob || pendingExportMode != EXPORT_LONG) {
                         return;
                     }
-                    first = captureScreenRoot();
+                    first = captureScreenRoot(LONG_ROOT_SCREENSHOT_TIMEOUT_SEC);
                     if (first == null) {
                         rootCaptureFailed = true;
                         throw new IOException("root screen capture unavailable");
@@ -1930,7 +1935,7 @@ public final class FloatingService extends Service {
         }
     }
 
-    /** Matches a strip near the old viewport bottom against the new viewport. */
+    /** Matches several separated strips to estimate a stable vertical translation. */
     private int findVerticalOverlap(Bitmap previous, Bitmap current) {
         if (previous == null || current == null || previous.getWidth() != current.getWidth()) {
             return -1;
@@ -1939,57 +1944,86 @@ public final class FloatingService extends Service {
         final int height = current.getHeight();
         final int strip = Math.min(LONG_STRIP_HEIGHT, Math.max(12, height / 12));
         final int previousTop = Math.max(0, Math.round(height * 0.68f) - strip / 2);
-        final int minY = Math.max(0,
-                previousTop - Math.round(height * LONG_MAX_SCROLL_FRACTION));
-        final int maxY = Math.min(height - strip, previousTop + strip / 2);
-        if (maxY < minY) {
-            return -1;
+        final int expectedScroll = Math.round(height * LONG_EXPECTED_SCROLL_FRACTION);
+        final int scrollTolerance = Math.round(height * LONG_SCROLL_TOLERANCE_FRACTION);
+        final int preferredMin = Math.max(0, expectedScroll - scrollTolerance);
+        final int preferredMax = Math.min(height - strip, expectedScroll + scrollTolerance);
+
+        // Prefer the displacement implied by input swipe. Only try a smaller
+        // displacement when that search has no unique match: lists clamp at
+        // their end, where a final swipe can move less than requested.
+        int scroll = findVerticalScroll(previous, current, previousTop, strip,
+                preferredMin, preferredMax);
+        if (scroll < 0 && preferredMin > 0) {
+            scroll = findVerticalScroll(previous, current, previousTop, strip,
+                    0, preferredMin - 1);
         }
+        return scroll < 0 ? -1 : height - scroll;
+    }
+
+    /** Returns a uniquely matched scroll offset in the inclusive candidate range. */
+    private int findVerticalScroll(Bitmap previous, Bitmap current, int previousTop,
+                                   int strip, int minScroll, int maxScroll) {
+        final int width = current.getWidth();
+        final int height = current.getHeight();
+        final int[] previousTops = {
+                Math.max(0, previousTop - strip * 2),
+                previousTop,
+                Math.min(height - strip, previousTop + strip * 2)
+        };
         final int stepX = Math.max(4, width / 80);
         final int stepY = Math.max(2, strip / 12);
         long bestError = Long.MAX_VALUE;
-        int bestY = -1;
         long secondBestError = Long.MAX_VALUE;
-        int samples = 0;
-        for (int y = minY; y <= maxY; y += stepY) {
+        int bestSamples = 0;
+        int secondBestSamples = 0;
+        int bestScroll = -1;
+
+        for (int scroll = minScroll; scroll <= maxScroll; scroll += stepY) {
             long error = 0L;
             int count = 0;
-            for (int sy = 2; sy < strip - 2; sy += 4) {
-                for (int x = width / 16; x < width - width / 16; x += stepX) {
-                    final int a = previous.getPixel(x, previousTop + sy);
-                    final int b = current.getPixel(x, y + sy);
-                    error += Math.abs(Color.red(a) - Color.red(b))
-                            + Math.abs(Color.green(a) - Color.green(b))
-                            + Math.abs(Color.blue(a) - Color.blue(b));
-                    count++;
+            int matchedStrips = 0;
+            for (int top : previousTops) {
+                final int currentTop = top - scroll;
+                if (currentTop < 0 || currentTop + strip > height) {
+                    continue;
+                }
+                matchedStrips++;
+                for (int sy = 2; sy < strip - 2; sy += 4) {
+                    for (int x = width / 16; x < width - width / 16; x += stepX) {
+                        final int a = previous.getPixel(x, top + sy);
+                        final int b = current.getPixel(x, currentTop + sy);
+                        error += Math.abs(Color.red(a) - Color.red(b))
+                                + Math.abs(Color.green(a) - Color.green(b))
+                                + Math.abs(Color.blue(a) - Color.blue(b));
+                        count++;
+                    }
                 }
             }
-            if (count > 0) {
-                if (error < bestError) {
-                    secondBestError = bestError;
-                    bestError = error;
-                    bestY = y;
-                    samples = count;
-                } else if (error < secondBestError) {
-                    secondBestError = error;
-                }
+            if (matchedStrips < 2 || count == 0) {
+                continue;
+            }
+            if (error < bestError) {
+                secondBestError = bestError;
+                secondBestSamples = bestSamples;
+                bestError = error;
+                bestSamples = count;
+                bestScroll = scroll;
+            } else if (error < secondBestError) {
+                secondBestError = error;
+                secondBestSamples = count;
             }
         }
-        if (bestY < 0 || samples == 0) {
+        if (bestScroll < 0 || bestSamples == 0) {
             return -1;
         }
-        final float meanError = bestError / (float) samples;
-        final float runnerUpError = secondBestError == Long.MAX_VALUE
-                ? Float.MAX_VALUE : secondBestError / (float) samples;
-        if (meanError > LONG_MATCH_TOLERANCE
-                || (runnerUpError - meanError) < 2f) {
+        final float meanError = bestError / (float) bestSamples;
+        final float runnerUpError = secondBestError == Long.MAX_VALUE || secondBestSamples == 0
+                ? Float.MAX_VALUE : secondBestError / (float) secondBestSamples;
+        if (meanError > LONG_MATCH_TOLERANCE || runnerUpError - meanError < 2f) {
             return -1;
         }
-        final int scroll = previousTop - bestY;
-        if (scroll < 0) {
-            return -1;
-        }
-        return scroll == 0 ? 0 : height - scroll;
+        return bestScroll;
     }
 
     private void cancelLongScreenshotWorker() {
@@ -2342,6 +2376,10 @@ public final class FloatingService extends Service {
      * the PNG does not decode; the export then falls back to MediaProjection.
      */
     private static Bitmap captureScreenRoot() {
+        return captureScreenRoot(ROOT_SCREENSHOT_TIMEOUT_SEC);
+    }
+
+    private static Bitmap captureScreenRoot(long timeoutSeconds) {
         Process process = null;
         try {
             process = Runtime.getRuntime().exec(new String[]{"su", "-c", "screencap -p"});
@@ -2377,7 +2415,7 @@ public final class FloatingService extends Service {
             }, "ga-screencap-error-reader");
             reader.start();
             errorReader.start();
-            if (!process.waitFor(ROOT_SCREENSHOT_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 reader.join(500L);
                 errorReader.join(500L);

@@ -171,6 +171,10 @@ public final class FloatingService extends Service {
     private FrameLayout paletteHost;
     private ValueAnimator paletteAnimator;
     private boolean paletteOpen;
+    /** A deferred open is queued behind a collapse animation. */
+    private boolean palettePendingOpen;
+    /** Invalidates a deferred open when the palette is toggled again. */
+    private int paletteShowToken;
     /** Last instance, for gesture broadcasts that arrive on the Binder thread. */
     private static volatile FloatingService instance;
     /** Window root of the panel currently attached, or null. */
@@ -178,6 +182,8 @@ public final class FloatingService extends Service {
     /** Screen origin of the attached panel window; stylus events are rebased. */
     private int openPanelX;
     private int openPanelY;
+    private int openPanelW;
+    private int openPanelH;
     /** Every panel window this service has attached and not yet removed. */
     private final ArrayList<FrameLayout> attachedPanelHosts = new ArrayList<>();
     /** Invalidates the delayed window removal of an already dismissed panel. */
@@ -222,6 +228,16 @@ public final class FloatingService extends Service {
                         return;
                     }
                     if (openPanelHost != null) {
+                        // A panel window can never receive ACTION_OUTSIDE for
+                        // an injected event, so an outside DOWN dismisses here.
+                        final boolean inside = event.getX() >= openPanelX
+                                && event.getX() < openPanelX + openPanelW
+                                && event.getY() >= openPanelY
+                                && event.getY() < openPanelY + openPanelH;
+                        if (event.getActionMasked() == MotionEvent.ACTION_DOWN && !inside) {
+                            dismissPanels();
+                            return;
+                        }
                         final MotionEvent local = MotionEvent.obtain(event);
                         local.offsetLocation(-openPanelX, -openPanelY);
                         openPanelHost.dispatchTouchEvent(local);
@@ -820,13 +836,17 @@ public final class FloatingService extends Service {
     private void togglePalette() {
         if (paletteOpen) {
             closePalette(true);
+        } else if (palettePendingOpen) {
+            // A second squeeze during the deferred open cancels it.
+            palettePendingOpen = false;
+            paletteShowToken++;
         } else {
             openPalette();
         }
     }
 
     private void openPalette() {
-        if (!started || host == null || morph == null) {
+        if (!started || host == null || morph == null || exporting) {
             return;
         }
         dismissPanels();
@@ -837,12 +857,17 @@ public final class FloatingService extends Service {
             final float y = visible != null ? visible.exactCenterY() : morph.ballCy();
             collapseToNearest(x, y, false);
         }
+        final int token = ++paletteShowToken;
         if (morph.isAnimating()) {
             // Let the capsule finish collapsing into its ball first.
+            palettePendingOpen = true;
             mainHandler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    showPaletteNow();
+                    if (token == paletteShowToken) {
+                        palettePendingOpen = false;
+                        showPaletteNow();
+                    }
                 }
             }, 360L);
         } else {
@@ -851,7 +876,7 @@ public final class FloatingService extends Service {
     }
 
     private void showPaletteNow() {
-        if (!started || paletteOpen || host == null) {
+        if (!started || paletteOpen || host == null || exporting) {
             return;
         }
         if (palette == null) {
@@ -861,26 +886,33 @@ public final class FloatingService extends Service {
         palette.setSelected(penStyle);
         palette.setOpenProgress(0f);
 
-        final FrameLayout root = new PanelHost(this);
-        root.setClickable(true);
-        root.addView(palette, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
+        // The host is created once and re-attached: re-parenting the single
+        // palette view into a fresh host would throw "child already has a
+        // parent" on the second open and kill the process.
+        if (paletteHost == null) {
+            paletteHost = new PanelHost(this);
+            paletteHost.setClickable(true);
+            paletteHost.addView(palette, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+        }
         final WindowManager.LayoutParams params = overlayParams();
         // Full screen and touchable: the palette is transparent outside the
         // band, so its own hit test decides between a hidden control and a
         // dismiss, exactly like the official wrapper.
         params.flags = BASE_OVERLAY_FLAGS;
-        if (!addOverlay(root, params)) {
+        if (!addOverlay(paletteHost, params)) {
             return;
         }
-        paletteHost = root;
         paletteOpen = true;
         palette.show();
         animatePalette(0f, 1f);
     }
 
     private void closePalette(boolean animated) {
+        // Any deferred open is stale from here on.
+        palettePendingOpen = false;
+        paletteShowToken++;
         if (!paletteOpen) {
             return;
         }
@@ -944,9 +976,10 @@ public final class FloatingService extends Service {
             palette.hide();
             palette.setOpenProgress(0f);
         }
+        // Keep the host (and the palette inside it) for the next open; only
+        // the window goes away.
         if (paletteHost != null) {
             removeOverlay(paletteHost);
-            paletteHost = null;
         }
     }
 
@@ -1311,12 +1344,15 @@ public final class FloatingService extends Service {
             try {
                 windowManager.updateViewLayout(windowRoot, params);
             } catch (RuntimeException gone) {
+                removeOverlay(windowRoot);
                 attachedPanelHosts.remove(windowRoot);
                 return null;
             }
             openPanelHost = windowRoot;
             openPanelX = origin[0];
             openPanelY = origin[1];
+            openPanelW = width;
+            openPanelH = height;
             return origin;
         }
 
@@ -1329,6 +1365,8 @@ public final class FloatingService extends Service {
         openPanelHost = windowRoot;
         openPanelX = origin[0];
         openPanelY = origin[1];
+        openPanelW = width;
+        openPanelH = height;
         return origin;
     }
 

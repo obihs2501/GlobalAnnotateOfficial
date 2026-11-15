@@ -100,7 +100,9 @@ public final class BrushPanel extends LinearLayout {
         INK_PEN(1, 25, 15, "压力灵敏度", false, 255),
         MARKER(5, 45, 25, "压力灵敏度", false, 110),
         WATER_COLOR(5, 25, 25, "压力灵敏度", false, 72),
-        ERASER(4, 25, 6, "压力灵敏度", true, 255);
+        // Official penpicker pixel eraser range is 4..32 (Mi Canvas'
+        // SelectAlphaView.setMin(4)/setMax(32)); the value is a radius.
+        ERASER(4, 32, 6, "压力灵敏度", true, 255);
 
         public final int minSize;
         public final int maxSize;
@@ -133,6 +135,15 @@ public final class BrushPanel extends LinearLayout {
          * 0..1 and {@code tip} is 1..4.
          */
         void onBrushChanged(float width, float alpha, float sensitivity, int tip);
+
+        /**
+         * The eraser mode tab changed: {@code false} is the pixel eraser, the
+         * default, and {@code true} is the whole-stroke eraser.
+         */
+        void onEraserModeChanged(boolean wholeStroke);
+
+        /** The rows above changed visibility, so the panel height changed. */
+        void onContentHeightChanged();
 
         /** The user asked to close the panel (the close button). */
         void onDismiss();
@@ -203,6 +214,22 @@ public final class BrushPanel extends LinearLayout {
     private static final float CLOSE_STROKE_DP = 1.8f;
     private static final int CLOSE_COLOR = 0xCC000000;
 
+    // Eraser mode tabs. The official penpicker eraser is a miuix
+    // FilterSortView (34dp pills, 14sp) with the pixel/stroke tabs; the
+    // stroke mode hides the size content and shows a hint instead
+    // (p249l1lII1Il.li1liliI1i1, penpicker_popup_layout_eraser_set.xml).
+    private static final int TAB_HEIGHT_DP = 34;
+    private static final int TAB_ROW_PAD_DP = 2;
+    private static final float TAB_TEXT_SP = 14f;
+    private static final int TAB_ROW_BG = 0x0F000000;
+    private static final int TAB_SELECTED_BG = 0xFFFFFFFF;
+    private static final int TAB_TEXT_SELECTED = 0xE6000000;
+    private static final int TAB_TEXT_NORMAL = 0x99000000;
+    private static final int ERASER_HINT_COLOR = 0x66000000;
+    private static final float ERASER_HINT_SP = 14f;
+    private static final int ERASER_HINT_TOP_DP = 31;
+    private static final int ERASER_HINT_BOTTOM_DP = 25;
+
     // Row kinds, mirroring BrushPanel.ParamKind.
     private static final int KIND_SIZE = 0;
     private static final int KIND_SENSITIVITY = 1;
@@ -225,6 +252,11 @@ public final class BrushPanel extends LinearLayout {
     private int showEpoch;
 
     private PreviewView preview;
+    private LinearLayout tabsRow;
+    private TextView pixelTab;
+    private TextView strokeTab;
+    private TextView eraserHint;
+    private boolean wholeStroke;
     private SizeRow sizeRow;
     private SensitivityRow sensitivityRow;
     private TipRow tipRow;
@@ -244,6 +276,53 @@ public final class BrushPanel extends LinearLayout {
         setElevation(dpf(8f));
         buildUi(context);
         syncRows();
+        applyEraserMode(wholeStroke, false);
+    }
+
+    private TextView makeTab(Context context, String label) {
+        TextView tab = new TextView(context);
+        tab.setText(label);
+        tab.setTextSize(TypedValue.COMPLEX_UNIT_SP, TAB_TEXT_SP);
+        tab.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        tab.setGravity(Gravity.CENTER);
+        tab.setIncludeFontPadding(false);
+        tab.setClickable(true);
+        return tab;
+    }
+
+    /**
+     * Applies the eraser mode to the row visibility. Pixel keeps the size row;
+     * the stroke eraser replaces it with the official hint. The eraser has no
+     * sensitivity/tip/opacity controls in Mi Canvas, so those rows are hidden
+     * for it in either mode.
+     */
+    private void applyEraserMode(boolean value, boolean notify) {
+        wholeStroke = value;
+        if (tabsRow == null) {
+            return;
+        }
+        final boolean eraser = tool.eraser;
+        tabsRow.setVisibility(eraser ? VISIBLE : GONE);
+        sizeRow.setVisibility(eraser && value ? GONE : VISIBLE);
+        sensitivityRow.setVisibility(eraser ? GONE : VISIBLE);
+        tipRow.setVisibility(eraser ? GONE : VISIBLE);
+        alphaRow.setVisibility(eraser ? GONE : VISIBLE);
+        eraserHint.setVisibility(eraser && value ? VISIBLE : GONE);
+        styleTab(pixelTab, !value);
+        styleTab(strokeTab, value);
+        if (notify && listener != null) {
+            listener.onEraserModeChanged(value);
+            listener.onContentHeightChanged();
+        }
+    }
+
+    private void styleTab(TextView tab, boolean selected) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(selected ? TAB_SELECTED_BG : 0x00000000);
+        bg.setCornerRadius(dpf(TAB_HEIGHT_DP / 2f));
+        tab.setBackground(bg);
+        tab.setTextColor(selected ? TAB_TEXT_SELECTED : TAB_TEXT_NORMAL);
+        tab.setSelected(selected);
     }
 
     // Public API.
@@ -256,8 +335,19 @@ public final class BrushPanel extends LinearLayout {
         tool = value;
         brushWidth = clampFloat(brushWidth, tool.minSize, tool.maxSize);
         sensitivityRow.titleView.setText(tool.sensitivityTitle);
+        sizeRow.titleView.setText(tool.eraser ? "橡皮大小" : "笔画粗细");
         preview.setEraser(tool.eraser);
+        applyEraserMode(wholeStroke, false);
         syncRows();
+    }
+
+    /** Sets the eraser mode tab; does not fire the listener. */
+    public void setEraserMode(boolean wholeStroke) {
+        applyEraserMode(wholeStroke, false);
+    }
+
+    public boolean isWholeStroke() {
+        return wholeStroke;
     }
 
     public Tool getTool() {
@@ -409,6 +499,54 @@ public final class BrushPanel extends LinearLayout {
                 dp(44), dp(44), Gravity.END | Gravity.TOP));
         addView(previewBox, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(PREVIEW_HEIGHT_DP)));
+
+        // Eraser mode: the official penpicker swaps a pixel/stroke pair of
+        // FilterSortView tabs above the size content (penpicker_popup_layout_
+        // eraser_set.xml). Only the eraser shows the row.
+        tabsRow = new LinearLayout(context);
+        tabsRow.setOrientation(HORIZONTAL);
+        GradientDrawable tabsBg = new GradientDrawable();
+        tabsBg.setColor(TAB_ROW_BG);
+        tabsBg.setCornerRadius(dpf(TAB_HEIGHT_DP / 2f + TAB_ROW_PAD_DP));
+        tabsRow.setBackground(tabsBg);
+        tabsRow.setPadding(dp(TAB_ROW_PAD_DP), dp(TAB_ROW_PAD_DP),
+                dp(TAB_ROW_PAD_DP), dp(TAB_ROW_PAD_DP));
+        pixelTab = makeTab(context, "像素橡皮");
+        pixelTab.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                applyEraserMode(false, true);
+            }
+        });
+        strokeTab = makeTab(context, "笔画橡皮");
+        strokeTab.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                applyEraserMode(true, true);
+            }
+        });
+        tabsRow.addView(pixelTab, new LinearLayout.LayoutParams(0, dp(TAB_HEIGHT_DP), 1f));
+        tabsRow.addView(strokeTab, new LinearLayout.LayoutParams(0, dp(TAB_HEIGHT_DP), 1f));
+        LinearLayout.LayoutParams tabsLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tabsLp.leftMargin = dp(CONTENT_PAD_H_DP);
+        tabsLp.rightMargin = dp(CONTENT_PAD_H_DP);
+        addView(tabsRow, tabsLp);
+
+        // The official stroke-erase hint, shown instead of the size content
+        // (pk_eraser_stroke_hint, 31dp top / 25dp bottom).
+        eraserHint = new TextView(context);
+        eraserHint.setText("笔画橡皮无需调整粗细");
+        eraserHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, ERASER_HINT_SP);
+        eraserHint.setTextColor(ERASER_HINT_COLOR);
+        eraserHint.setGravity(Gravity.CENTER);
+        eraserHint.setIncludeFontPadding(false);
+        eraserHint.setVisibility(GONE);
+        LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hintLp.topMargin = dp(ERASER_HINT_TOP_DP);
+        hintLp.bottomMargin = dp(ERASER_HINT_BOTTOM_DP);
+        addView(eraserHint, hintLp);
 
         ScrollView scroll = new ScrollView(context);
         scroll.setFillViewport(false);

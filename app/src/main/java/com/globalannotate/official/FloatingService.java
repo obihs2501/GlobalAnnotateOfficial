@@ -18,6 +18,7 @@ import android.graphics.Point;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Region;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.Handler;
@@ -25,11 +26,13 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
+import android.view.AttachedSurfaceControl;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.view.animation.DecelerateInterpolator;
 import android.view.animation.LinearInterpolator;
 import android.widget.FrameLayout;
 import android.widget.Toast;
@@ -106,6 +109,8 @@ public final class FloatingService extends Service {
     private static final String KEY_COLOR = "color";
     private static final String KEY_RECENT_COLORS = "recentColors";
     private static final String BRUSH_KEY_PREFIX = "brush_";
+    /** The eraser's pixel/stroke tab, persisted like a brush property. */
+    private static final String ERASER_WHOLE_KEY = "eraser_whole_stroke";
     /** One stored {@link PenGesturePanel.Action} name per pen gesture. */
     private static final String GESTURE_KEY_PREFIX = "gesture_";
     /** One persisted boolean per MoreMenuView switch. */
@@ -182,11 +187,15 @@ public final class FloatingService extends Service {
     private FrameLayout gesturePanelHost;
     /** Anchor the gesture card opened on, for re-placing it after a level swap. */
     private int gesturePanelAnchorX;
+    /** Anchor the brush card opened on, for re-placing it after a tab swap. */
+    private int brushPanelAnchorX;
 
     /** Arc pen palette, its full-screen window and the open/close animation. */
     private RadialPalette palette;
     private FrameLayout paletteHost;
     private ValueAnimator paletteAnimator;
+    /** Drives MinimizedBallView.setRotation because ViewPropertyAnimator skips it. */
+    private ValueAnimator ballRotationAnimator;
     private boolean paletteOpen;
     /** A deferred open is queued behind a collapse animation. */
     private boolean palettePendingOpen;
@@ -510,6 +519,9 @@ public final class FloatingService extends Service {
         if (!addOverlay(host, visualParams())) {
             return false;
         }
+        // Keep the window "touchable" for HyperOS' alpha rule but give it no
+        // touchable area; the proxy below is the only picker input window.
+        clearHostTouchRegion();
         // The host converts screen coordinates through its window origin.
         host.captureScreenOrigin();
 
@@ -550,6 +562,8 @@ public final class FloatingService extends Service {
                 if (started && host != null) {
                     host.captureScreenOrigin();
                     syncProxyToHost();
+                    // The first region call can race the root surface creation.
+                    clearHostTouchRegion();
                 }
             }
         });
@@ -568,15 +582,57 @@ public final class FloatingService extends Service {
     }
 
     /**
-     * Same geometry as {@link #overlayParams()} but untouchable: used by the
-     * picker host, whose only job is to draw. Touches are delivered by the
-     * transparent proxy window instead.
+     * Same geometry as {@link #overlayParams()} but the picker's visual host.
+     *
+     * <p>It must NOT carry {@code FLAG_NOT_TOUCHABLE}: HyperOS clamps every
+     * untouchable {@code TYPE_APPLICATION_OVERLAY} window to 80% alpha ("…with
+     * FLAG_NOT_TOUCHABLE and LayoutParams.alpha = 1.00 > 0.80, setting alpha to
+     * 0.80 to let touches pass through"), which made the whole ball and capsule
+     * look translucent. The window stays touchable and its touchable region is
+     * cleared to an empty region right after it is added, so it never receives
+     * input; the separate proxy window owns every picker touch.</p>
      */
     private WindowManager.LayoutParams visualParams() {
         final WindowManager.LayoutParams lp = overlayParams();
-        lp.flags = BASE_OVERLAY_FLAGS | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+        lp.flags = BASE_OVERLAY_FLAGS | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
         return lp;
+    }
+
+    /**
+     * Gives the visual host an empty touchable region. The window must stay
+     * touchable for input purposes only so HyperOS does not lower its alpha;
+     * an empty region means no touch is ever delivered to it. On a platform
+     * without {@link AttachedSurfaceControl#setTouchableRegion} the window
+     * reverts to FLAG_NOT_TOUCHABLE, trading the 80% alpha for correct input.
+     */
+    private void clearHostTouchRegion() {
+        if (host == null || windowManager == null) {
+            return;
+        }
+        boolean cleared = false;
+        try {
+            final AttachedSurfaceControl control = host.getRootSurfaceControl();
+            if (control != null) {
+                control.setTouchableRegion(new Region());
+                cleared = true;
+            }
+        } catch (RuntimeException | LinkageError unsupported) {
+            cleared = false;
+        }
+        if (cleared) {
+            return;
+        }
+        final ViewGroup.LayoutParams raw = host.getLayoutParams();
+        if (!(raw instanceof WindowManager.LayoutParams)) {
+            return;
+        }
+        final WindowManager.LayoutParams lp = (WindowManager.LayoutParams) raw;
+        lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        try {
+            windowManager.updateViewLayout(host, lp);
+        } catch (RuntimeException ignored) {
+            // The window went away with the service.
+        }
     }
 
     private boolean addOverlay(View view, WindowManager.LayoutParams params) {
@@ -810,6 +866,21 @@ public final class FloatingService extends Service {
             settings.tip = tip;
             applyBrushToView();
             persistLater();
+        }
+
+        @Override
+        public void onEraserModeChanged(boolean wholeStroke) {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putBoolean(ERASER_WHOLE_KEY, wholeStroke)
+                    .apply();
+            if (annotationView != null) {
+                annotationView.setStrokeEraseEnabled(wholeStroke);
+            }
+        }
+
+        @Override
+        public void onContentHeightChanged() {
+            resizeBrushPanel();
         }
 
         @Override
@@ -1240,6 +1311,8 @@ public final class FloatingService extends Service {
         panel.setTool(brushTool(style));
         panel.setBrush(settings.width, settings.alpha, settings.sensitivity, settings.tip);
         panel.setColor(penColor);
+        panel.setEraserMode(getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getBoolean(ERASER_WHOLE_KEY, false));
 
         final int width = panelWidthPx(BRUSH_PANEL_WIDTH_DP);
         final int height = panelHeightPx(panel.measuredHeightForWidth(width));
@@ -1247,6 +1320,7 @@ public final class FloatingService extends Service {
         if (origin == null) {
             return;
         }
+        brushPanelAnchorX = anchorX;
         panel.showAt(anchorX, panelAnchorY(origin, height),
                 insetPx, Math.max(insetPx, screenH - insetPx));
         pinPanelSize(panel, width, height);
@@ -1364,6 +1438,21 @@ public final class FloatingService extends Service {
         final int height = panelHeightPx(gesturePanel.measuredHeightForWidth(width));
         pinPanelSize(gesturePanel, width, height);
         placePanel(gesturePanel, gesturePanelHost, width, height, gesturePanelAnchorX);
+    }
+
+    /**
+     * The eraser tab changed which rows are visible, so the brush card's
+     * height changed. Re-measure and re-place the still-open window.
+     */
+    private void resizeBrushPanel() {
+        if (brushPanel == null || brushPanelHost == null
+                || openPanelHost != brushPanelHost) {
+            return;
+        }
+        final int width = panelWidthPx(BRUSH_PANEL_WIDTH_DP);
+        final int height = panelHeightPx(brushPanel.measuredHeightForWidth(width));
+        pinPanelSize(brushPanel, width, height);
+        placePanel(brushPanel, brushPanelHost, width, height, brushPanelAnchorX);
     }
 
     /** The bound action for a gesture, falling back to its documented default. */
@@ -1784,6 +1873,11 @@ public final class FloatingService extends Service {
         annotationView.setPenColor(penColor);
         annotationView.setPenWidth(strokeWidthPx(penStyle, settings.width));
         annotationView.setPenAlpha(Math.round(settings.alpha));
+        final boolean wholeStroke = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getBoolean(ERASER_WHOLE_KEY, false);
+        if (annotationView.isStrokeEraseEnabled() != wholeStroke) {
+            annotationView.setStrokeEraseEnabled(wholeStroke);
+        }
     }
 
     private BrushSettings settingsFor(Types.PenStyle style) {
@@ -2153,7 +2247,7 @@ public final class FloatingService extends Service {
             expanded = false;
             // The minimised ball is upright on every anchor; ease the brush
             // back to upright instead of popping if it came from a side dock.
-            host.ball().animate().rotation(0f).setDuration(180L).start();
+            animateBallRotation(0f, 180L);
             host.capsule().setTransitioning(true);
             morph.beginSnap(nearest.cx, nearest.cy, new Runnable() {
                 @Override
@@ -2196,7 +2290,7 @@ public final class FloatingService extends Service {
         // the ball is still the visible object (before the 35% hand-over), so
         // the capsule never appears with a different glyph angle than the ball
         // it replaces. Only the brush glyph rotates, never the disc.
-        host.ball().animate().rotation(dockToolRotation(dock)).setDuration(140L).start();
+        animateBallRotation(dockToolRotation(dock), 140L);
         morph.beginExpand(dock, target.x, target.y, new Runnable() {
             @Override
             public void run() {
@@ -2229,6 +2323,7 @@ public final class FloatingService extends Service {
         // rather than the anchor's: a side-docked capsule can collapse to a
         // corner anchor.
         host.ball().animate().cancel();   // don't let a running expand animation overwrite the hand-over angle
+        cancelBallRotation();
         host.ball().setRotation(host.capsule().toolRotation());
         host.capsule().setTransitioning(true);
         morph.beginCollapse(anchor.cx, anchor.cy, new Runnable() {
@@ -2243,7 +2338,7 @@ public final class FloatingService extends Service {
                 host.capsule().enterBallMode(host.ballSizePx());
                 host.setCapsuleSize(host.ballSizePx(), host.ballSizePx());
                 // The ball is on screen now; turn the brush upright inside it.
-                host.ball().animate().rotation(0f).setDuration(180L).start();
+                animateBallRotation(0f, 180L);
                 if (forCapsuleDrag) {
                     afterCollapseDrag = true;
                     // Latch the finger-to-ball offset at hand-over. Without
@@ -2393,6 +2488,59 @@ public final class FloatingService extends Service {
             return -90f;
         }
         return 0f;
+    }
+
+    /**
+     * Animates the brush glyph inside the minimised ball. ViewPropertyAnimator
+     * cannot be used here: {@code View.animate().rotation()} drives the view's
+     * RenderNode rotation directly and never calls the overridden
+     * {@link MinimizedBallView#setRotation(float)}, which is the method that
+     * turns only the glyph. The visible result was the glyph staying at the
+     * capsule's dock angle after a collapse instead of settling upright. A
+     * ValueAnimator calls the override on every frame.
+     */
+    private void animateBallRotation(float target, long durationMs) {
+        if (host == null) {
+            return;
+        }
+        cancelBallRotation();
+        final MinimizedBallView ball = host.ball();
+        final float from = ball.getRotation();
+        float delta = target - from;
+        while (delta > 180f) {
+            delta -= 360f;
+        }
+        while (delta < -180f) {
+            delta += 360f;
+        }
+        if (Math.abs(delta) < 0.5f || durationMs <= 0L) {
+            ball.setRotation(from + delta);
+            return;
+        }
+        final float start = from;
+        final float sweep = delta;
+        final ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
+        animator.setDuration(durationMs);
+        animator.setInterpolator(new DecelerateInterpolator(1.5f));
+        animator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator animation) {
+                if (host == null) {
+                    animation.cancel();
+                    return;
+                }
+                ball.setRotation(start + sweep * animation.getAnimatedFraction());
+            }
+        });
+        ballRotationAnimator = animator;
+        animator.start();
+    }
+
+    private void cancelBallRotation() {
+        if (ballRotationAnimator != null) {
+            ballRotationAnimator.cancel();
+            ballRotationAnimator = null;
+        }
     }
 
     // ------------------------------------------------------------------

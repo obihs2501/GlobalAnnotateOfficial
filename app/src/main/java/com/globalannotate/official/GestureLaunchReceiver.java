@@ -74,6 +74,20 @@ public final class GestureLaunchReceiver extends BroadcastReceiver {
      */
     private static final long GESTURE_DEDUPE_WINDOW_MS = 400L;
     /**
+     * Window in which a DOUBLE_TAP is treated as the ROM's second report of a
+     * squeeze that was already accepted.
+     *
+     * <p>On the Xiaomi pen one squeeze can produce the helper's own SQUEEZE
+     * broadcast and, roughly a second later, the ROM's key 195 ("double tap").
+     * With a 400 ms window the 195 was accepted, so squeezing the eraser and
+     * squeezing again to go back ran the DOUBLE_TAP action instead — with the
+     * user's binding that is EXIT, and the overlay closed. The pair window is
+     * deliberately wider than the same-name one: two deliberate squeezes are
+     * still recognised because each is broadcast as SQUEEZE, never as a tap
+     * after the first.</p>
+     */
+    private static final long SQUEEZE_TAP_DEDUPE_WINDOW_MS = 1600L;
+    /**
      * Last gesture that was allowed through, in memory only (no persistence
      * across process restarts). Broadcasts are normally delivered on the main
      * thread, but the lock also covers a direct caller on another thread.
@@ -178,14 +192,20 @@ public final class GestureLaunchReceiver extends BroadcastReceiver {
         final long now = SystemClock.uptimeMillis();
         synchronized (GESTURE_DEDUPE_LOCK) {
             final long elapsed = now - lastGestureAtMs;
-            if (lastGestureName != null && elapsed >= 0L
-                    && elapsed <= GESTURE_DEDUPE_WINDOW_MS) {
-                if (lastGestureName.equals(name)) {
+            if (lastGestureName != null && elapsed >= 0L) {
+                if (lastGestureName.equals(name) && elapsed <= GESTURE_DEDUPE_WINDOW_MS) {
                     Log.i(GESTURE_LOG_TAG, "suppressed duplicate " + name
                             + " (" + elapsed + "ms after " + lastGestureName + ")");
                     return false;
                 }
-                if (isSqueezeTapPair(lastGestureName, name)) {
+                if (elapsed <= SQUEEZE_TAP_DEDUPE_WINDOW_MS
+                        && isLateSqueezeTap(lastGestureName, name)) {
+                    Log.i(GESTURE_LOG_TAG, "suppressed " + name + " (" + elapsed
+                            + "ms after " + lastGestureName + "): ROM report of the squeeze");
+                    return false;
+                }
+                if (elapsed <= GESTURE_DEDUPE_WINDOW_MS
+                        && isSqueezeTapPair(lastGestureName, name)) {
                     Log.i(GESTURE_LOG_TAG, "suppressed " + name + " (" + elapsed
                             + "ms after " + lastGestureName + "): one physical pen action");
                     return false;
@@ -202,6 +222,15 @@ public final class GestureLaunchReceiver extends BroadcastReceiver {
     private static boolean isSqueezeTapPair(String first, String second) {
         return (GESTURE_SQUEEZE.equals(first) && GESTURE_DOUBLE_TAP.equals(second))
                 || (GESTURE_DOUBLE_TAP.equals(first) && GESTURE_SQUEEZE.equals(second));
+    }
+
+    /**
+     * True when a DOUBLE_TAP follows an accepted SQUEEZE inside the wide pair
+     * window. Only this direction is widened: a squeeze right after a
+     * double-tap is a new command (summon) and must run immediately.
+     */
+    private static boolean isLateSqueezeTap(String first, String second) {
+        return GESTURE_SQUEEZE.equals(first) && GESTURE_DOUBLE_TAP.equals(second);
     }
 
     private static void toggleOverlay(Context context) {

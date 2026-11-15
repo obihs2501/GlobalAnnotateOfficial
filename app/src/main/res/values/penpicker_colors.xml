@@ -37,4 +37,13 @@
     <color name="penpicker_pen_set_text">#cc000000</color>
     <color name="pk_property_seekbar_bg">#0f000000</color>
     <color name="penpicker_transparent">#00000000</color>
+    <!-- Eraser tabs, from Mi Canvas' creation_eraser_* night-aware colours. -->
+    <color name="creation_eraser_hint_color">#66000000</color>
+    <color name="creation_eraser_tab_item">#ffffff</color>
+    <!-- Local roles that Mi Canvas names only in code; the night values keep
+         the same contrast the official light colours have. -->
+    <color name="ga_tab_text_selected">#e6000000</color>
+    <color name="ga_tab_text_normal">#99000000</color>
+    <color name="ga_icon_disabled">#33000000</color>
+    <color name="ga_row_pressed_bg">#1f000000</color>
 </resources>

@@ -2,6 +2,7 @@ package com.globalannotate.official;
 
 import android.animation.ValueAnimator;
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ComposeShader;
@@ -133,12 +134,13 @@ public final class CapsuleView extends FrameLayout {
     private static final long LONG_PRESS_MS = 500L;
     private static final float LONG_PRESS_SLOP_DP = 8f;
 
-    // -------------------- colours (the official light capsule) --------------------
-    private static final int CAPSULE_BG = 0xFFFFFFFF;
-    private static final int HANDLE_COLOR = 0x1A000000;
-    private static final int BUTTON_BG = 0x0F000000;
-    private static final int ICON_COLOR = 0xCC000000;
-    private static final int ICON_DISABLED = 0x33000000;
+    // Capsule colours, resolved from the picker palette so the night
+    // resources (penpicker_background_color #242424 and friends) apply.
+    private final int capsuleBg;
+    private final int handleColor;
+    private final int buttonBg;
+    private final int iconColor;
+    private final int iconDisabled;
     /** Ring used where a near-white swatch would vanish on the capsule. */
     private static final int NEAR_WHITE_RING = 0x66000000;
     private static final int[] WHEEL_COLORS = {
@@ -242,6 +244,13 @@ public final class CapsuleView extends FrameLayout {
         this.listener = listener;
         this.density = context.getResources().getDisplayMetrics().density;
         this.scaledTouchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+        // Night mode changes these through values-night (official #242424).
+        this.capsuleBg = pickerColor(context, R.color.penpicker_background_color, 0xFFFFFFFF);
+        this.handleColor = pickerColor(context, R.color.penpicker_dividing_line_color, 0x1A000000);
+        this.buttonBg = pickerColor(context, R.color.penpicker_circle_button_background_color,
+                0x0F000000);
+        this.iconColor = pickerColor(context, R.color.penpicker_pen_set_text, 0xCC000000);
+        this.iconDisabled = pickerColor(context, R.color.ga_icon_disabled, 0x33000000);
 
         setClipChildren(true);
         setClipToPadding(true);
@@ -485,6 +494,16 @@ public final class CapsuleView extends FrameLayout {
     }
 
     // -------------------- geometry --------------------
+
+    /** Resolves a picker colour; the fallback keeps the view drawable if a
+     *  host build strips the resource. */
+    private static int pickerColor(Context context, int resId, int fallback) {
+        try {
+            return context.getColor(resId);
+        } catch (Resources.NotFoundException missing) {
+            return fallback;
+        }
+    }
 
     private static float clamp(float value, float min, float max) {
         if (max < min) {
@@ -990,7 +1009,7 @@ public final class CapsuleView extends FrameLayout {
         // The overlay window is translucent, so a stale frame survives unless
         // this view clears its own clipped area first (as the old view did).
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
-        canvas.drawColor(CAPSULE_BG);
+        canvas.drawColor(capsuleBg);
         super.dispatchDraw(canvas);
     }
 
@@ -1308,7 +1327,7 @@ public final class CapsuleView extends FrameLayout {
 
             if (checked) {
                 paint.setStyle(Paint.Style.FILL);
-                paint.setColor(nearWhite ? NEAR_WHITE_RING : CAPSULE_BG);
+                paint.setColor(nearWhite ? NEAR_WHITE_RING : capsuleBg);
                 canvas.drawCircle(cx, cy, r * 0.8125f, paint);
                 paint.setColor(color);
                 canvas.drawCircle(cx, cy, r * 0.65f, paint);
@@ -1371,10 +1390,10 @@ public final class CapsuleView extends FrameLayout {
 
             paint.setShader(null);
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(BUTTON_BG);
+            paint.setColor(buttonBg);
             canvas.drawCircle(cx, cy, radius, paint);
 
-            paint.setColor(enabledVisual ? ICON_COLOR : ICON_DISABLED);
+            paint.setColor(enabledVisual ? iconColor : iconDisabled);
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeJoin(Paint.Join.ROUND);
 
@@ -1425,7 +1444,7 @@ public final class CapsuleView extends FrameLayout {
             if (w <= 0 || h <= 0) {
                 return;
             }
-            paint.setColor(HANDLE_COLOR);
+            paint.setColor(handleColor);
             float r = Math.min(w, h) / 2f;
             canvas.drawRoundRect(new RectF(0f, 0f, w, h), r, r, paint);
         }

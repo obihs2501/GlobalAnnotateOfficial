@@ -1,6 +1,7 @@
 package com.globalannotate.official.panels;
 
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
@@ -41,21 +42,21 @@ import java.util.ArrayList;
  *                                     (penpicker_color_picker_popup_width)
  * PANEL_HEIGHT_DP 571 ............... AnnotationService.kt:1563-1576 (pk_color_picker_popup_height)
  * PANEL_RADIUS_DP 36 ................ penpicker_dimens.xml (penpicker_color_picker_background_radius)
- * PANEL_BG 0xFFFFFFFF ............... penpicker_colors.xml (penpicker_background_color)
+ * panelBg 0xFFFFFFFF ............... penpicker_colors.xml (penpicker_background_color)
  * TITLE_ROW_DP 44 ................... layout/penpicker_popup_color_picker.xml:23-24
  * TITLE_MARGIN_TOP_DP 20 ............ layout/penpicker_popup_color_picker.xml:11
  * TITLE_MARGIN_BOTTOM_DP 12 ......... layout/penpicker_popup_color_picker.xml:12
  * PAGE_MARGIN_DP 20 ................. layout/penpicker_popup_color_picker.xml:13
  * TITLE_TEXT_SP 20 .................. penpicker_styles.xml (penpicker_colorpicker_title)
  * BODY_TEXT_SP 14 ................... penpicker_styles.xml (penpicker_pen_set_size)
- * TITLE_COLOR 0xFF000000 ............ penpicker_colors.xml (penpicker_colorpicker_text_title)
- * BODY_TEXT_COLOR 0xCC000000 ....... penpicker_colors.xml (penpicker_pen_set_text)
+ * titleColor 0xFF000000 ............ penpicker_colors.xml (penpicker_colorpicker_text_title)
+ * bodyTextColor 0xCC000000 ....... penpicker_colors.xml (penpicker_pen_set_text)
  * TAB_HEIGHT_DP 40 .................. layout/penpicker_popup_color_picker.xml:30-31
  * TAB_TEXT_SP 14 .................... FilterSortView.kt:78-81
- * TAB_BG 0xFFFFFFFF ................. FilterSortView.kt:52
- * TAB_STROKE_COLOR 0x0D000000 ....... FilterSortView.kt:54
- * TAB_SELECTED_FILL 0x0F000000 ...... FilterSortView.kt:72
- * TAB_TEXT_COLOR 0xFF000000 ......... FilterSortView.kt:73-75
+ * tabBg 0xFFFFFFFF ................. FilterSortView.kt:52
+ * tabStrokeColor 0x0D000000 ....... FilterSortView.kt:54
+ * tabSelectedFill 0x0F000000 ...... FilterSortView.kt:72
+ * tabTextColor 0xFF000000 ......... FilterSortView.kt:73-75
  * TAB_PADDING_DP 3 .................. FilterSortView.kt:43-44
  * PAGER_TOP_MARGIN_DP 16 ............ layout/penpicker_popup_color_picker.xml:53
  * PAGER_SIDE_MARGIN_DP 15 ........... layout/penpicker_popup_color_picker.xml:61
@@ -94,9 +95,9 @@ import java.util.ArrayList;
  * THUMB_RING_DP 8.14 ................ PickerBar.kt:56-62
  * THUMB_BORDER_DP 0.7 ............... PickerBar.kt:56-66
  * THUMB_MARGIN_DP 1.81 .............. PickerBar.kt:56-66
- * TRACK_BG 0x0F000000 ............... penpicker_colors.xml (pk_property_seekbar_bg)
- * TRACK_BORDER 0x0D000000 ........... PickerBar.kt:107-108
- * THUMB_BORDER 0x0F000000 ........... PickerBar.kt:125-126
+ * trackBg 0x0F000000 ............... penpicker_colors.xml (pk_property_seekbar_bg)
+ * trackBorder 0x0D000000 ........... PickerBar.kt:107-108
+ * thumbBorder 0x0F000000 ........... PickerBar.kt:125-126
  * CHECKER 0xFF9A9A9A / 0xFFD6D6D6 ... PickerBar.kt:163-182
  * DEFAULT_COLOR 0xFFE8464A .......... ColorPanel.kt:104
  * DEFAULT_ALPHA 255 ................. ColorPanel.kt:95
@@ -130,7 +131,7 @@ public final class ColorPanel extends LinearLayout {
     private static final float PANEL_WIDTH_DP = 360f;
     private static final float PANEL_HEIGHT_DP = 571f;
     private static final float PANEL_RADIUS_DP = 36f;
-    private static final int PANEL_BG = 0xFFFFFFFF;
+    private final int panelBg;
 
     // Title row: 44dp eyedropper box, 20dp top, 12dp bottom, 20dp page margins.
     private static final int TITLE_ROW_DP = 44;
@@ -139,16 +140,16 @@ public final class ColorPanel extends LinearLayout {
     private static final int PAGE_MARGIN_DP = 20;
     private static final float TITLE_TEXT_SP = 20f;
     private static final float BODY_TEXT_SP = 14f;
-    private static final int TITLE_COLOR = 0xFF000000;
-    private static final int BODY_TEXT_COLOR = 0xCC000000;
+    private final int titleColor;
+    private final int bodyTextColor;
 
     // Two-tab pill, from FilterSortView.
     private static final int TAB_HEIGHT_DP = 40;
     private static final float TAB_TEXT_SP = 14f;
-    private static final int TAB_BG = 0xFFFFFFFF;
-    private static final int TAB_STROKE_COLOR = 0x0D000000;
-    private static final int TAB_SELECTED_FILL = 0x0F000000;
-    private static final int TAB_TEXT_COLOR = 0xFF000000;
+    private final int tabBg;
+    private final int tabStrokeColor;
+    private final int tabSelectedFill;
+    private final int tabTextColor;
     private static final int TAB_PADDING_DP = 3;
 
     // Pager and pages.
@@ -162,7 +163,7 @@ public final class ColorPanel extends LinearLayout {
     private static final int GRID_ROWS = 9;
     private static final float GRID_RADIUS_DP = 8.89f;
     private static final float GRID_BORDER_WIDTH = 1f;
-    private static final int GRID_BORDER_COLOR = 0x1A000000;
+    private final int gridBorderColor;
     private static final float GRID_RING_DP = 8.14f;
     private static final int GRID_ROW0_RING = 0xFFE4E4E4;
     private static final int GRID_ALPHA_TOP_MARGIN_DP = 16;
@@ -193,9 +194,9 @@ public final class ColorPanel extends LinearLayout {
     private static final float THUMB_RING_DP = 8.14f;
     private static final float THUMB_BORDER_DP = 0.7f;
     private static final float THUMB_MARGIN_DP = 1.81f;
-    private static final int TRACK_BG = 0x0F000000;
-    private static final int TRACK_BORDER = 0x0D000000;
-    private static final int THUMB_BORDER = 0x0F000000;
+    private final int trackBg;
+    private final int trackBorder;
+    private final int thumbBorder;
     private static final int CHECKER_A = 0xFF9A9A9A;
     private static final int CHECKER_B = 0xFFD6D6D6;
 
@@ -223,7 +224,7 @@ public final class ColorPanel extends LinearLayout {
     // Close affordance. Invented: replaces the old 44dp eyedropper slot.
     private static final float CLOSE_ARM_DP = 7f;
     private static final float CLOSE_STROKE_DP = 1.8f;
-    private static final int CLOSE_COLOR = 0xCC000000;
+    private final int closeColor;
 
     // Rail modes.
     private static final int RAIL_HUE = 0;
@@ -276,11 +277,26 @@ public final class ColorPanel extends LinearLayout {
         super(context);
         this.listener = listener;
         this.density = context.getResources().getDisplayMetrics().density;
+        // Night mode resolves these through values-night, like Mi Canvas.
+        this.panelBg = pickerColor(context, R.color.penpicker_background_color, 0xFFFFFFFF);
+        this.titleColor = pickerColor(context, R.color.penpicker_colorpicker_text_title, 0xFF000000);
+        this.bodyTextColor = pickerColor(context, R.color.penpicker_pen_set_text, 0xCC000000);
+        this.tabBg = pickerColor(context, R.color.penpicker_background_color, 0xFFFFFFFF);
+        this.tabStrokeColor = pickerColor(context, R.color.creation_seekbar_border, 0x0D000000);
+        this.tabSelectedFill = pickerColor(context,
+                R.color.penpicker_circle_button_background_color, 0x0F000000);
+        this.tabTextColor = pickerColor(context, R.color.penpicker_colorpicker_text_title,
+                0xFF000000);
+        this.gridBorderColor = pickerColor(context, R.color.penpicker_dividing_line_color, 0x1A000000);
+        this.trackBg = pickerColor(context, R.color.pk_property_seekbar_bg, 0x0F000000);
+        this.trackBorder = pickerColor(context, R.color.creation_seekbar_border, 0x0D000000);
+        this.thumbBorder = pickerColor(context, R.color.pk_property_seekbar_bg, 0x0F000000);
+        this.closeColor = pickerColor(context, R.color.penpicker_pen_set_text, 0xCC000000);
         Color.colorToHSV(color, hsv);
         setOrientation(VERTICAL);
         setClickable(true);
         GradientDrawable background = new GradientDrawable();
-        background.setColor(PANEL_BG);
+        background.setColor(panelBg);
         background.setCornerRadius(dpf(PANEL_RADIUS_DP));
         setBackground(background);
         setClipToOutline(true);
@@ -435,7 +451,7 @@ public final class ColorPanel extends LinearLayout {
         TextView title = new TextView(context);
         title.setText("颜色");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, TITLE_TEXT_SP);
-        title.setTextColor(TITLE_COLOR);
+        title.setTextColor(titleColor);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setIncludeFontPadding(false);
         title.setLetterSpacing(0f);
@@ -649,7 +665,7 @@ public final class ColorPanel extends LinearLayout {
         TextView view = new TextView(getContext());
         view.setText(text);
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, BODY_TEXT_SP);
-        view.setTextColor(BODY_TEXT_COLOR);
+        view.setTextColor(bodyTextColor);
         view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         view.setIncludeFontPadding(false);
         view.setLetterSpacing(0f);
@@ -872,6 +888,16 @@ public final class ColorPanel extends LinearLayout {
                 getResources().getDisplayMetrics());
     }
 
+    /** Resolves a palette colour; the fallback keeps the panel drawable if a
+     *  host build strips the resource. */
+    private static int pickerColor(Context context, int resId, int fallback) {
+        try {
+            return context.getColor(resId);
+        } catch (Resources.NotFoundException missing) {
+            return fallback;
+        }
+    }
+
     private static int clampInt(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
     }
@@ -898,7 +924,7 @@ public final class ColorPanel extends LinearLayout {
             ringPaint.setColor(Color.WHITE);
             borderPaint.setStyle(Paint.Style.STROKE);
             borderPaint.setStrokeWidth(GRID_BORDER_WIDTH);
-            borderPaint.setColor(GRID_BORDER_COLOR);
+            borderPaint.setColor(gridBorderColor);
             setClickable(true);
         }
 
@@ -1113,12 +1139,12 @@ public final class ColorPanel extends LinearLayout {
                 canvas.drawRoundRect(trackRect, radius, radius, trackPaint);
                 trackPaint.setShader(null);
             } else {
-                trackPaint.setColor(TRACK_BG);
+                trackPaint.setColor(trackBg);
                 canvas.drawRoundRect(trackRect, radius, radius, trackPaint);
             }
 
             borderPaint.setStrokeWidth(dpf(1.5f));
-            borderPaint.setColor(TRACK_BORDER);
+            borderPaint.setColor(trackBorder);
             canvas.drawRoundRect(trackRect, radius, radius, borderPaint);
 
             float thumbDiameter = dpf(THUMB_DIAMETER_DP);
@@ -1138,7 +1164,7 @@ public final class ColorPanel extends LinearLayout {
             canvas.drawCircle(cx, cy, ringCentre, ringPaint);
 
             borderPaint.setStrokeWidth(dpf(THUMB_BORDER_DP));
-            borderPaint.setColor(THUMB_BORDER);
+            borderPaint.setColor(thumbBorder);
             canvas.drawCircle(cx, cy, thumbRadius - dpf(THUMB_BORDER_DP) / 2f, borderPaint);
         }
 
@@ -1369,23 +1395,23 @@ public final class ColorPanel extends LinearLayout {
             float radius = h / 2f;
             rect.set(0f, 0f, w, h);
             fillPaint.setStyle(Paint.Style.FILL);
-            fillPaint.setColor(TAB_BG);
+            fillPaint.setColor(tabBg);
             canvas.drawRoundRect(rect, radius, radius, fillPaint);
             strokePaint.setStrokeWidth(dpf(1f));
-            strokePaint.setColor(TAB_STROKE_COLOR);
+            strokePaint.setColor(tabStrokeColor);
             canvas.drawRoundRect(rect, radius, radius, strokePaint);
 
             float pad = dpf(TAB_PADDING_DP);
             float tabWidth = (w - 2f * pad) / 2f;
             rect.set(pad + selected * tabWidth, pad,
                     pad + (selected + 1) * tabWidth, h - pad);
-            fillPaint.setColor(TAB_SELECTED_FILL);
+            fillPaint.setColor(tabSelectedFill);
             float innerRadius = (h - 2f * pad) / 2f;
             canvas.drawRoundRect(rect, innerRadius, innerRadius, fillPaint);
 
             textPaint.setTextSize(sp(TAB_TEXT_SP));
             textPaint.setTextAlign(Paint.Align.CENTER);
-            textPaint.setColor(TAB_TEXT_COLOR);
+            textPaint.setColor(tabTextColor);
             Paint.FontMetrics metrics = textPaint.getFontMetrics();
             float baseline = h / 2f - (metrics.ascent + metrics.descent) / 2f;
             for (int i = 0; i < labels.length; i++) {
@@ -1433,7 +1459,7 @@ public final class ColorPanel extends LinearLayout {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(dpf(CLOSE_STROKE_DP));
             paint.setStrokeCap(Paint.Cap.ROUND);
-            paint.setColor(CLOSE_COLOR);
+            paint.setColor(closeColor);
             canvas.drawLine(cx - arm, cy - arm, cx + arm, cy + arm, paint);
             canvas.drawLine(cx + arm, cy - arm, cx - arm, cy + arm, paint);
         }

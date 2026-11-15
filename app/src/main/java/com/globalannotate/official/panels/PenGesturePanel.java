@@ -1,6 +1,7 @@
 package com.globalannotate.official.panels;
 
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -148,12 +149,12 @@ public final class PenGesturePanel extends LinearLayout {
     private static final int ROW_PAD_H_DP = 12;
 
     // Fixed white palette, matching BrushPanel / ColorPanel.
-    private static final int PANEL_BG = 0xFFFFFFFF;
-    private static final int TEXT_PRIMARY = 0xFF000000;
-    private static final int TEXT_SECONDARY = 0xCC000000;
+    private final int panelBg;
+    private final int textPrimary;
+    private final int textSecondary;
     private static final int ACCENT = 0xFF3482FF;
-    private static final int ROW_BG = 0x0F000000;
-    private static final int ROW_PRESSED_BG = 0x1F000000;
+    private final int rowBg;
+    private final int rowPressedBg;
     private static final int SELECTED_BG = 0x143482FF;
     private static final int SELECTED_PRESSED_BG = 0x293482FF;
 
@@ -179,6 +180,13 @@ public final class PenGesturePanel extends LinearLayout {
         super(context);
         this.listener = listener;
         this.density = context.getResources().getDisplayMetrics().density;
+        // Night mode resolves these through values-night, like Mi Canvas.
+        this.panelBg = pickerColor(context, R.color.penpicker_background_color, 0xFFFFFFFF);
+        this.textPrimary = pickerColor(context, R.color.penpicker_colorpicker_text_title,
+                0xFF000000);
+        this.textSecondary = pickerColor(context, R.color.penpicker_pen_set_text, 0xCC000000);
+        this.rowBg = pickerColor(context, R.color.pk_property_seekbar_bg, 0x0F000000);
+        this.rowPressedBg = pickerColor(context, R.color.ga_row_pressed_bg, 0x1F000000);
 
         setOrientation(VERTICAL);
         setClickable(true);
@@ -188,7 +196,7 @@ public final class PenGesturePanel extends LinearLayout {
                 dp(PANEL_PAD_DP), dp(PANEL_PAD_DP));
 
         final GradientDrawable background = new GradientDrawable();
-        background.setColor(PANEL_BG);
+        background.setColor(panelBg);
         background.setCornerRadius(dpf(PANEL_RADIUS_DP));
         setBackground(background);
 
@@ -199,7 +207,7 @@ public final class PenGesturePanel extends LinearLayout {
         final TextView title = new TextView(context);
         title.setText(R.string.ga_gesture_title);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, TITLE_TEXT_SP);
-        title.setTextColor(TEXT_PRIMARY);
+        title.setTextColor(textPrimary);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setIncludeFontPadding(false);
         title.setLetterSpacing(0f);
@@ -357,7 +365,7 @@ public final class PenGesturePanel extends LinearLayout {
         final Context context = getContext();
         final TextView back = makeRow(context.getString(R.string.ga_gesture_back_format,
                 gesture.label(context)), false);
-        back.setTextColor(TEXT_SECONDARY);
+        back.setTextColor(textSecondary);
         back.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -398,10 +406,20 @@ public final class PenGesturePanel extends LinearLayout {
 
     private CharSequence gestureRowText(Context context, Gesture gesture, Action action) {
         final SpannableStringBuilder text = new SpannableStringBuilder();
-        appendColored(text, gesture.label(context), TEXT_PRIMARY);
-        appendColored(text, " — ", TEXT_SECONDARY);
-        appendColored(text, action.label(context), TEXT_SECONDARY);
+        appendColored(text, gesture.label(context), textPrimary);
+        appendColored(text, " — ", textSecondary);
+        appendColored(text, action.label(context), textSecondary);
         return text;
+    }
+
+    /** Resolves a palette colour; the fallback keeps the panel drawable if a
+     *  host build strips the resource. */
+    private static int pickerColor(Context context, int resId, int fallback) {
+        try {
+            return context.getColor(resId);
+        } catch (Resources.NotFoundException missing) {
+            return fallback;
+        }
     }
 
     private static void appendColored(SpannableStringBuilder out, String part, int color) {
@@ -415,7 +433,7 @@ public final class PenGesturePanel extends LinearLayout {
         final TextView row = new TextView(getContext());
         row.setText(text);
         row.setTextSize(TypedValue.COMPLEX_UNIT_SP, ROW_TEXT_SP);
-        row.setTextColor(selected ? ACCENT : TEXT_PRIMARY);
+        row.setTextColor(selected ? ACCENT : textPrimary);
         row.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         row.setIncludeFontPadding(false);
         row.setLetterSpacing(0f);
@@ -432,10 +450,10 @@ public final class PenGesturePanel extends LinearLayout {
     /** Rounded row wash: translucent white, blue-tinted when selected. */
     private Drawable rowBackground(boolean selected) {
         final GradientDrawable normal = new GradientDrawable();
-        normal.setColor(selected ? SELECTED_BG : ROW_BG);
+        normal.setColor(selected ? SELECTED_BG : rowBg);
         normal.setCornerRadius(dpf(ROW_RADIUS_DP));
         final GradientDrawable pressed = new GradientDrawable();
-        pressed.setColor(selected ? SELECTED_PRESSED_BG : ROW_PRESSED_BG);
+        pressed.setColor(selected ? SELECTED_PRESSED_BG : rowPressedBg);
         pressed.setCornerRadius(dpf(ROW_RADIUS_DP));
         final StateListDrawable states = new StateListDrawable();
         states.addState(new int[]{android.R.attr.state_pressed}, pressed);

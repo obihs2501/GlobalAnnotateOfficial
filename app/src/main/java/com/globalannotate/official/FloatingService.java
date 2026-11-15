@@ -609,6 +609,11 @@ public final class FloatingService extends Service {
         if (host == null || windowManager == null) {
             return;
         }
+        final ViewGroup.LayoutParams raw = host.getLayoutParams();
+        if (!(raw instanceof WindowManager.LayoutParams)) {
+            return;
+        }
+        final WindowManager.LayoutParams lp = (WindowManager.LayoutParams) raw;
         boolean cleared = false;
         try {
             final AttachedSurfaceControl control = host.getRootSurfaceControl();
@@ -620,13 +625,22 @@ public final class FloatingService extends Service {
             cleared = false;
         }
         if (cleared) {
+            // The pre-attach call had to fall back to FLAG_NOT_TOUCHABLE
+            // because the root surface did not exist yet. Now that the region
+            // is in place the flag can go: HyperOS clamps every untouchable
+            // system alert window to 80% alpha ("setting alpha to 0.80 to let
+            // touches pass through"), which made the picker translucent.
+            if ((lp.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0) {
+                lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                lp.alpha = 1f;
+                try {
+                    windowManager.updateViewLayout(host, lp);
+                } catch (RuntimeException ignored) {
+                    // The window went away with the service.
+                }
+            }
             return;
         }
-        final ViewGroup.LayoutParams raw = host.getLayoutParams();
-        if (!(raw instanceof WindowManager.LayoutParams)) {
-            return;
-        }
-        final WindowManager.LayoutParams lp = (WindowManager.LayoutParams) raw;
         lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         try {
             windowManager.updateViewLayout(host, lp);

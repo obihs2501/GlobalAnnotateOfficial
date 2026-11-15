@@ -1,6 +1,7 @@
 package com.globalannotate.official.panels;
 
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
@@ -40,7 +41,7 @@ import android.widget.TextView;
  * PANEL_WIDTH_DP 288 ................ AnnotationService.kt:1371 (dp(288));
  *                                     penpicker_dimens.xml (penpicker_pen_set_popup_window_width)
  * PANEL_RADIUS_DP 36 ................ penpicker_dimens.xml (penpicker_color_picker_background_radius)
- * PANEL_BG 0xFFFFFFFF ............... penpicker_colors.xml (penpicker_background_color)
+ * panelBg 0xFFFFFFFF ............... penpicker_colors.xml (penpicker_background_color)
  * PREVIEW_HEIGHT_DP 110 ............. layout/penpicker_popup_layout_pen_set.xml:12-13;
  *                                     penpicker_dimens.xml (pk_pen_set_preview_image_height)
  * CONTENT_PAD_H_DP 20 ............... layout/penpicker_popup_layout_pen_set.xml:20
@@ -48,7 +49,7 @@ import android.widget.TextView;
  * ROW_SLIDER_HEIGHT_DP 28 ........... layout/penpicker_layout_pen_property_item.xml:28-29
  * ROW_SLIDER_MARGIN_TOP_DP 8 ........ layout/penpicker_layout_pen_property_item.xml:31
  * ROW_TEXT_SP 14 .................... penpicker_styles.xml (penpicker_pen_set_size)
- * ROW_TEXT_COLOR 0xCC000000 ......... penpicker_colors.xml (penpicker_pen_set_text)
+ * rowTextColor 0xCC000000 ......... penpicker_colors.xml (penpicker_pen_set_text)
  * TOOL RANGES ....................... PenStyle.kt:43-51; PENCIL max 22 at :44-46 is the
  *                                     user's deliberate deviation from Mi Canvas' 6
  * DEFAULT TOOL INK_PEN .............. BrushConfig.kt:10
@@ -66,10 +67,10 @@ import android.widget.TextView;
  * THUMB_RING_DP 8.14 ................ PickerBar.kt:56-62
  * THUMB_BORDER_DP 0.7 ............... PickerBar.kt:56-66
  * THUMB_MARGIN_DP 1.81 .............. PickerBar.kt:56-66
- * TRACK_BG 0x0F000000 ............... penpicker_colors.xml (pk_property_seekbar_bg)
+ * trackBg 0x0F000000 ............... penpicker_colors.xml (pk_property_seekbar_bg)
  * ACCENT 0xFF3482FF ................. PickerBar.kt:80; penpicker_colors.xml (pen_menu_eraser_button_selected_color)
- * TRACK_BORDER 0x0D000000 ........... PickerBar.kt:107-108
- * THUMB_BORDER 0x0F000000 ........... PickerBar.kt:125-126
+ * trackBorder 0x0D000000 ........... PickerBar.kt:107-108
+ * thumbBorder 0x0F000000 ........... PickerBar.kt:125-126
  * CHECKER 0xFF9A9A9A / 0xFFD6D6D6 ... PickerBar.kt:163-182
  * PREVIEW_SAMPLES 48 ................ StrokePreview.kt:45
  * PREVIEW_MARGIN_FACTOR 0.6 ......... StrokePreview.kt:54-57
@@ -152,7 +153,7 @@ public final class BrushPanel extends LinearLayout {
     // Panel box, from AnnotationService.showPanel(brushPanel, anchorX, 288, 0).
     private static final float PANEL_WIDTH_DP = 288f;
     private static final float PANEL_RADIUS_DP = 36f;
-    private static final int PANEL_BG = 0xFFFFFFFF;
+    private final int panelBg;
 
     // Preview and property rows.
     private static final int PREVIEW_HEIGHT_DP = 110;
@@ -161,7 +162,7 @@ public final class BrushPanel extends LinearLayout {
     private static final int ROW_SLIDER_HEIGHT_DP = 28;
     private static final int ROW_SLIDER_MARGIN_TOP_DP = 8;
     private static final float ROW_TEXT_SP = 14f;
-    private static final int ROW_TEXT_COLOR = 0xCC000000;
+    private final int rowTextColor;
 
     // Defaults, from BrushConfig/PenStyle.
     private static final int DEFAULT_COLOR = 0xFF40A9FF;
@@ -178,9 +179,9 @@ public final class BrushPanel extends LinearLayout {
     private static final float THUMB_RING_DP = 8.14f;
     private static final float THUMB_BORDER_DP = 0.7f;
     private static final float THUMB_MARGIN_DP = 1.81f;
-    private static final int TRACK_BG = 0x0F000000;
-    private static final int TRACK_BORDER = 0x0D000000;
-    private static final int THUMB_BORDER = 0x0F000000;
+    private final int trackBg;
+    private final int trackBorder;
+    private final int thumbBorder;
     private static final int ACCENT = 0xFF3482FF;
     private static final int CHECKER_A = 0xFF9A9A9A;
     private static final int CHECKER_B = 0xFFD6D6D6;
@@ -212,7 +213,7 @@ public final class BrushPanel extends LinearLayout {
     // Close affordance. Invented: the old brush popup had no close button.
     private static final float CLOSE_ARM_DP = 7f;
     private static final float CLOSE_STROKE_DP = 1.8f;
-    private static final int CLOSE_COLOR = 0xCC000000;
+    private final int closeColor;
 
     // Eraser mode tabs. The official penpicker eraser is a miuix
     // FilterSortView (34dp pills, 14sp) with the pixel/stroke tabs; the
@@ -221,11 +222,11 @@ public final class BrushPanel extends LinearLayout {
     private static final int TAB_HEIGHT_DP = 34;
     private static final int TAB_ROW_PAD_DP = 2;
     private static final float TAB_TEXT_SP = 14f;
-    private static final int TAB_ROW_BG = 0x0F000000;
-    private static final int TAB_SELECTED_BG = 0xFFFFFFFF;
-    private static final int TAB_TEXT_SELECTED = 0xE6000000;
-    private static final int TAB_TEXT_NORMAL = 0x99000000;
-    private static final int ERASER_HINT_COLOR = 0x66000000;
+    private final int tabRowBg;
+    private final int tabSelectedBg;
+    private final int tabTextSelected;
+    private final int tabTextNormal;
+    private final int eraserHintColor;
     private static final float ERASER_HINT_SP = 14f;
     private static final int ERASER_HINT_TOP_DP = 31;
     private static final int ERASER_HINT_BOTTOM_DP = 25;
@@ -266,10 +267,22 @@ public final class BrushPanel extends LinearLayout {
         super(context);
         this.listener = listener;
         this.density = context.getResources().getDisplayMetrics().density;
+        // Night mode resolves these through values-night, like Mi Canvas.
+        this.panelBg = pickerColor(context, R.color.penpicker_background_color, 0xFFFFFFFF);
+        this.rowTextColor = pickerColor(context, R.color.penpicker_pen_set_text, 0xCC000000);
+        this.trackBg = pickerColor(context, R.color.pk_property_seekbar_bg, 0x0F000000);
+        this.trackBorder = pickerColor(context, R.color.creation_seekbar_border, 0x0D000000);
+        this.thumbBorder = pickerColor(context, R.color.pk_property_seekbar_bg, 0x0F000000);
+        this.closeColor = pickerColor(context, R.color.penpicker_pen_set_text, 0xCC000000);
+        this.tabRowBg = pickerColor(context, R.color.pk_property_seekbar_bg, 0x0F000000);
+        this.tabSelectedBg = pickerColor(context, R.color.creation_eraser_tab_item, 0xFFFFFFFF);
+        this.tabTextSelected = pickerColor(context, R.color.ga_tab_text_selected, 0xE6000000);
+        this.tabTextNormal = pickerColor(context, R.color.ga_tab_text_normal, 0x99000000);
+        this.eraserHintColor = pickerColor(context, R.color.creation_eraser_hint_color, 0x66000000);
         setOrientation(VERTICAL);
         setClickable(true);
         GradientDrawable background = new GradientDrawable();
-        background.setColor(PANEL_BG);
+        background.setColor(panelBg);
         background.setCornerRadius(dpf(PANEL_RADIUS_DP));
         setBackground(background);
         setClipToOutline(true);
@@ -318,10 +331,10 @@ public final class BrushPanel extends LinearLayout {
 
     private void styleTab(TextView tab, boolean selected) {
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(selected ? TAB_SELECTED_BG : 0x00000000);
+        bg.setColor(selected ? tabSelectedBg : 0x00000000);
         bg.setCornerRadius(dpf(TAB_HEIGHT_DP / 2f));
         tab.setBackground(bg);
-        tab.setTextColor(selected ? TAB_TEXT_SELECTED : TAB_TEXT_NORMAL);
+        tab.setTextColor(selected ? tabTextSelected : tabTextNormal);
         tab.setSelected(selected);
     }
 
@@ -506,7 +519,7 @@ public final class BrushPanel extends LinearLayout {
         tabsRow = new LinearLayout(context);
         tabsRow.setOrientation(HORIZONTAL);
         GradientDrawable tabsBg = new GradientDrawable();
-        tabsBg.setColor(TAB_ROW_BG);
+        tabsBg.setColor(tabRowBg);
         tabsBg.setCornerRadius(dpf(TAB_HEIGHT_DP / 2f + TAB_ROW_PAD_DP));
         tabsRow.setBackground(tabsBg);
         tabsRow.setPadding(dp(TAB_ROW_PAD_DP), dp(TAB_ROW_PAD_DP),
@@ -538,7 +551,7 @@ public final class BrushPanel extends LinearLayout {
         eraserHint = new TextView(context);
         eraserHint.setText("笔画橡皮无需调整粗细");
         eraserHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, ERASER_HINT_SP);
-        eraserHint.setTextColor(ERASER_HINT_COLOR);
+        eraserHint.setTextColor(eraserHintColor);
         eraserHint.setGravity(Gravity.CENTER);
         eraserHint.setIncludeFontPadding(false);
         eraserHint.setVisibility(GONE);
@@ -583,7 +596,7 @@ public final class BrushPanel extends LinearLayout {
         TextView view = new TextView(getContext());
         view.setText(text);
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, ROW_TEXT_SP);
-        view.setTextColor(ROW_TEXT_COLOR);
+        view.setTextColor(rowTextColor);
         view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         view.setIncludeFontPadding(false);
         view.setLetterSpacing(0f);
@@ -706,6 +719,16 @@ public final class BrushPanel extends LinearLayout {
     private float sp(float value) {
         return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, value,
                 getResources().getDisplayMetrics());
+    }
+
+    /** Resolves a palette colour; the fallback keeps the panel drawable if a
+     *  host build strips the resource. */
+    private static int pickerColor(Context context, int resId, int fallback) {
+        try {
+            return context.getColor(resId);
+        } catch (Resources.NotFoundException missing) {
+            return fallback;
+        }
     }
 
     private static int clampInt(int value, int min, int max) {
@@ -878,12 +901,12 @@ public final class BrushPanel extends LinearLayout {
                 canvas.drawRoundRect(trackRect, radius, radius, trackPaint);
                 trackPaint.setShader(null);
             } else {
-                trackPaint.setColor(TRACK_BG);
+                trackPaint.setColor(trackBg);
                 canvas.drawRoundRect(trackRect, radius, radius, trackPaint);
             }
 
             borderPaint.setStrokeWidth(dpf(1.5f));
-            borderPaint.setColor(TRACK_BORDER);
+            borderPaint.setColor(trackBorder);
             canvas.drawRoundRect(trackRect, radius, radius, borderPaint);
 
             float thumbDiameter = dpf(THUMB_DIAMETER_DP);
@@ -903,7 +926,7 @@ public final class BrushPanel extends LinearLayout {
             canvas.drawCircle(cx, cy, ringCentre, ringPaint);
 
             borderPaint.setStrokeWidth(dpf(THUMB_BORDER_DP));
-            borderPaint.setColor(THUMB_BORDER);
+            borderPaint.setColor(thumbBorder);
             canvas.drawCircle(cx, cy, thumbRadius - dpf(THUMB_BORDER_DP) / 2f, borderPaint);
         }
 
@@ -1078,7 +1101,7 @@ public final class BrushPanel extends LinearLayout {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(dpf(CLOSE_STROKE_DP));
             paint.setStrokeCap(Paint.Cap.ROUND);
-            paint.setColor(CLOSE_COLOR);
+            paint.setColor(closeColor);
             canvas.drawLine(cx - arm, cy - arm, cx + arm, cy + arm, paint);
             canvas.drawLine(cx + arm, cy - arm, cx - arm, cy + arm, paint);
         }

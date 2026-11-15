@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Night values copied from Mi Canvas 4.1.8 (com.miui.creation) where the
+     official resource has a (night) qualifier; the remaining roles mirror the
+     official night art's contrast. Everything not listed here keeps the day
+     value from values/penpicker_colors.xml. -->
+<resources>
+    <color name="cp_top_bar_bg">#33ffffff</color>
+    <color name="creation_eraser_hint_color">#80ffffff</color>
+    <color name="creation_eraser_tab_item">#1fffffff</color>
+    <color name="creation_seekbar_border">#0dffffff</color>
+    <color name="pen_menu_background_color">#ff212121</color>
+    <color name="pen_menu_eraser_button_unselected_color">#24ffffff</color>
+    <color name="pen_menu_pencil_size_seekbar_bg_color">#24ffffff</color>
+    <color name="pen_menu_slider_stroke_color">#33ffffff</color>
+    <color name="penpicker_background_color">#ff242424</color>
+    <color name="penpicker_circle_button_background_color">#1effffff</color>
+    <color name="penpicker_colorpicker_text_title">#ffffffff</color>
+    <color name="penpicker_dividing_line_color">#33ffffff</color>
+    <color name="penpicker_eraser_hint_text_color">#7fffffff</color>
+    <color name="penpicker_more_item_text_color">#ccffffff</color>
+    <color name="penpicker_pen_set_text">#ccffffff</color>
+    <color name="pk_property_seekbar_bg">#24ffffff</color>
+    <color name="ga_tab_text_selected">#e6ffffff</color>
+    <color name="ga_tab_text_normal">#99ffffff</color>
+    <color name="ga_icon_disabled">#4dffffff</color>
+    <color name="ga_row_pressed_bg">#33ffffff</color>
+</resources>

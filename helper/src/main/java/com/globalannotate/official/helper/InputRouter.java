@@ -52,21 +52,40 @@ public final class InputRouter {
 
     public static void install(XposedInterface api, ClassLoader classLoader, AppBridge bridge) {
         int hooked = 0;
-        for (String className : CompatProfile.INPUT_SERVICE_CLASSES) {
+        // filterInputEvent can drop events, so ROOT_SPLIT forwarding lives here.
+        hooked += hook(api, classLoader, bridge, CompatProfile.INPUT_SERVICE_CLASSES,
+                CompatProfile.FILTER_METHOD, true);
+        // The system gesture listener sees every touch stream because
+        // DisplayPolicy registers it for the whole display. filterInputEvent
+        // above is only called by the native dispatcher while an input filter
+        // is installed, so on this ROM it never sees a finger and the corner
+        // summon was dead.
+        hooked += hook(api, classLoader, bridge, CompatProfile.POINTER_EVENT_CLASSES,
+                CompatProfile.POINTER_EVENT_METHOD, false);
+        if (hooked == 0) {
+            GaLog.e("no input hook found; ROOT_SPLIT and corner swipe disabled");
+        }
+    }
+
+    /** Hooks every match of {@code methodName} in the list and returns how many. */
+    private static int hook(XposedInterface api, ClassLoader classLoader, AppBridge bridge,
+                            List<String> classNames, String methodName, boolean canFilter) {
+        int hooked = 0;
+        for (String className : classNames) {
             Class<?> clazz;
             try {
                 clazz = Class.forName(className, false, classLoader);
             } catch (Throwable error) {
                 continue;
             }
-            for (Method method : findMethods(clazz, CompatProfile.FILTER_METHOD)) {
+            for (Method method : findMethods(clazz, methodName)) {
                 final Object dropped = droppedValueFor(method);
                 boolean ok;
                 try {
                     method.setAccessible(true);
                     api.hook(method).intercept(chain -> {
                         try {
-                            return handle(chain, bridge, dropped);
+                            return handle(chain, bridge, dropped, canFilter);
                         } catch (Throwable error) {
                             GaLog.e("input router error: " + error);
                             return chain.proceed();
@@ -85,7 +104,7 @@ public final class InputRouter {
                 }
             }
         }
-        if (hooked == 0) GaLog.e("filterInputEvent not found; ROOT_SPLIT and corner swipe disabled");
+        return hooked;
     }
 
     /** Value that makes the framework drop the event, matching the signature. */
@@ -97,8 +116,8 @@ public final class InputRouter {
         return null;
     }
 
-    private static Object handle(XposedInterface.Chain chain, AppBridge bridge, Object dropped)
-            throws Throwable {
+    private static Object handle(XposedInterface.Chain chain, AppBridge bridge, Object dropped,
+                                 boolean canFilter) throws Throwable {
         if (!ModuleState.enabled) return chain.proceed();
         List<Object> args = chain.getArgs();
         Object first = args.isEmpty() ? null : args.get(0);
@@ -121,7 +140,11 @@ public final class InputRouter {
             observeFingerCorner(event, bridge);
         }
 
-        if (ModuleState.splitMode && ModuleState.sink != null && isStylus) {
+        // Forwarding is only legal where the event can be dropped
+        // (filterInputEvent). onPointerEvent is a void listener that must not
+        // own the stream; were both live, forwarding twice would duplicate
+        // every pen sample.
+        if (canFilter && ModuleState.splitMode && ModuleState.sink != null && isStylus) {
             bridge.forwardStylus(event);
             return dropped; // pen is intentionally routed to the annotation layer
         }

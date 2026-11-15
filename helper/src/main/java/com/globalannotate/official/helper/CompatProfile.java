@@ -19,6 +19,17 @@ public final class CompatProfile {
 
     public static final String INTERCEPT_KEY_METHOD = "interceptKeyBeforeQueueing";
     public static final String FILTER_METHOD = "filterInputEvent";
+    /**
+     * WindowManager's system-gestures listener. Unlike
+     * {@code InputManagerService.filterInputEvent} (which the native
+     * dispatcher only calls while an input filter is installed), this pointer
+     * listener is registered by DisplayPolicy for the whole display, so it
+     * sees every finger and stylus stream from every app — the only reliable
+     * observation point for the corner summon.
+     */
+    public static final String POINTER_EVENT_CLASS =
+            "com.android.server.wm.SystemGesturesPointerEventListener";
+    public static final String POINTER_EVENT_METHOD = "onPointerEvent";
 
     public static final List<String> KEY_HOOK_CLASSES = Collections.unmodifiableList(Arrays.asList(
             TOUCH_FILM_CLASS,
@@ -29,6 +40,10 @@ public final class CompatProfile {
             "com.android.server.input.InputManagerService",
             "com.android.server.input.InputManagerService$LocalService",
             "com.miui.server.input.MiuiInputManagerService"));
+
+    /** Pointer listeners that receive every display touch stream. */
+    public static final List<String> POINTER_EVENT_CLASSES = Collections.unmodifiableList(Arrays.asList(
+            POINTER_EVENT_CLASS));
 
     /**
      * Observation zone for the pen-tip corner gesture. NOT a blocked area:

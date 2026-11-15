@@ -78,10 +78,9 @@ import android.widget.TextView;
  * PREVIEW_PRESSURE 0.35 + 0.65 ...... StrokePreview.kt:64-66
  * ERASER_PREVIEW 0xFFD0D0D0 ......... StrokePreview.kt:42
  * DEFAULT_COLOR 0xFF40A9FF .......... BrushConfig.kt:12
- * TIP_* ............................. invented selector: the old TIP row was a 1..4
- *                                     slider (BrushPanel.kt:165-169); the brief asks
- *                                     for a selector, so four 28dp segments are drawn
- *                                     with the existing #3482FF / #0F000000 literals.
+ * TIP ROW ........................... a 1..4 rail, like the old TIP slider
+ *                                     (BrushPanel.kt:165-169); the value snaps to
+ *                                     whole nib sizes.
  * SHOW/HIDE animation ............... AnnotationService.kt:1680-1700, 1716-1730
  * PLACEMENT gaps .................... AnnotationService.kt:1656-1679
  * CLOSE_* ........................... invented close control for Listener.onDismiss()
@@ -175,12 +174,6 @@ public final class BrushPanel extends LinearLayout {
     private static final int ERASER_PREVIEW = 0xFFD0D0D0;
 
     // Tip selector, an invented stand-in for the old 1..4 TIP slider.
-    private static final int TIP_GAP_DP = 8;
-    private static final float TIP_TEXT_SP = 12f;
-    private static final int TIP_SELECTED_BG = ACCENT;
-    private static final int TIP_UNSELECTED_BG = 0x0F000000;
-    private static final int TIP_SELECTED_TEXT = 0xFFFFFFFF;
-    private static final int TIP_UNSELECTED_TEXT = 0xCC000000;
 
     // Open/close animation, from AnnotationService.showPanel/closePanels.
     private static final long SHOW_SCALE_DURATION = 280L;
@@ -203,6 +196,7 @@ public final class BrushPanel extends LinearLayout {
     private static final int KIND_SIZE = 0;
     private static final int KIND_SENSITIVITY = 1;
     private static final int KIND_ALPHA = 2;
+    private static final int KIND_TIP = 3;
 
     // Rail modes.
     private static final int RAIL_PROPERTY = 0;
@@ -483,6 +477,9 @@ public final class BrushPanel extends LinearLayout {
         if (alphaRow != null) {
             alphaRow.valueView.setText((brushAlpha * 100 / 255) + "%");
         }
+        if (tipRow != null) {
+            tipRow.valueView.setText(String.valueOf(brushTip));
+        }
     }
 
     private void onRailProgress(Rail rail) {
@@ -497,17 +494,14 @@ public final class BrushPanel extends LinearLayout {
                 brushAlpha = clampInt(Math.round(rail.rawValue()), MIN_ALPHA, MAX_ALPHA);
                 rail.setBaseColor(brushColor);
                 break;
+            case KIND_TIP:
+                brushTip = clampInt(Math.round(rail.rawValue()), 1, MAX_TIP);
+                break;
             default:
                 break;
         }
         updateLabels();
         preview.invalidate();
-        notifyBrushChanged();
-    }
-
-    private void onTipPicked(int value) {
-        brushTip = clampInt(value, 1, MAX_TIP);
-        tipRow.setTip(brushTip);
         notifyBrushChanged();
     }
 
@@ -629,16 +623,18 @@ public final class BrushPanel extends LinearLayout {
     }
 
     private final class TipRow extends BaseRow {
-        final TipSelector selector;
+        final Rail rail;
 
         TipRow(Context context) {
-            super(context, -1, "笔尖大小");
-            selector = new TipSelector(context);
-            addView(selector, controlParams());
+            super(context, KIND_TIP, "笔尖大小");
+            rail = new Rail(context, RAIL_PROPERTY, KIND_TIP);
+            rail.setRange(1, MAX_TIP);
+            addView(rail, controlParams());
         }
 
         void setTip(int value) {
-            selector.setSelected(value);
+            rail.setRange(1, MAX_TIP);
+            rail.setRawValue(value);
             valueView.setText(String.valueOf(value));
         }
     }
@@ -816,78 +812,6 @@ public final class BrushPanel extends LinearLayout {
             while (parent != null) {
                 parent.requestDisallowInterceptTouchEvent(lock);
                 parent = parent.getParent();
-            }
-        }
-    }
-
-    /** Four segment pills, the brief's tip selector. */
-    private final class TipSelector extends View {
-        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF rect = new RectF();
-        private final Typeface medium = Typeface.create("sans-serif-medium", Typeface.NORMAL);
-        private int selected = DEFAULT_TIP;
-
-        TipSelector(Context context) {
-            super(context);
-            setClickable(true);
-        }
-
-        void setSelected(int value) {
-            selected = clampInt(value, 1, MAX_TIP);
-            invalidate();
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            int w = getWidth();
-            int h = getHeight();
-            if (w <= 0 || h <= 0) {
-                return;
-            }
-            float gap = dpf(TIP_GAP_DP);
-            float segment = (w - 3f * gap) / 4f;
-            if (segment <= 0f) {
-                return;
-            }
-            textPaint.setTextSize(sp(TIP_TEXT_SP));
-            textPaint.setTextAlign(Paint.Align.CENTER);
-            textPaint.setTypeface(medium);
-            Paint.FontMetrics metrics = textPaint.getFontMetrics();
-            float baseline = h / 2f - (metrics.ascent + metrics.descent) / 2f;
-            for (int i = 0; i < 4; i++) {
-                float left = i * (segment + gap);
-                float right = left + segment;
-                rect.set(left, 0f, right, h);
-                fillPaint.setColor(i + 1 == selected ? TIP_SELECTED_BG : TIP_UNSELECTED_BG);
-                canvas.drawRoundRect(rect, h / 2f, h / 2f, fillPaint);
-                textPaint.setColor(i + 1 == selected ? TIP_SELECTED_TEXT : TIP_UNSELECTED_TEXT);
-                canvas.drawText(String.valueOf(i + 1), (left + right) / 2f, baseline, textPaint);
-            }
-        }
-
-        @Override
-        public boolean onTouchEvent(MotionEvent event) {
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    return true;
-                case MotionEvent.ACTION_UP:
-                    float gap = dpf(TIP_GAP_DP);
-                    float segment = (getWidth() - 3f * gap) / 4f;
-                    if (segment <= 0f) {
-                        return true;
-                    }
-                    int index = (int) (event.getX() / (segment + gap));
-                    index = clampInt(index, 0, 3);
-                    int value = index + 1;
-                    if (value != selected) {
-                        selected = value;
-                        invalidate();
-                        BrushPanel.this.onTipPicked(value);
-                    }
-                    return true;
-                default:
-                    return super.onTouchEvent(event);
             }
         }
     }

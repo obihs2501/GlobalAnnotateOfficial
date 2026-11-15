@@ -110,6 +110,8 @@ public final class FloatingService extends Service {
     private static final String GESTURE_KEY_PREFIX = "gesture_";
     /** One persisted boolean per MoreMenuView switch. */
     private static final String SWITCH_KEY_PREFIX = "switch_";
+    /** How long an enable waits for the helper's TX_SET_ACTIVE confirmation. */
+    private static final long SPLIT_CONFIRM_MS = 1000L;
     private static final int MAX_RECENT_COLORS = 12;
     private static final int MIN_PEN_ALPHA = 3;
     private static final int MAX_PEN_ALPHA = 255;
@@ -266,8 +268,10 @@ public final class FloatingService extends Service {
 
                 @Override
                 public void onSplitActiveChanged(boolean active) {
-                    // The canvas window stays touchable for fingers either way;
-                    // the helper alone decides which events it reroutes.
+                    // ROOT_SPLIT sends the stylus over this Binder sink and
+                    // leaves fingers in normal dispatch. The canvas must stop
+                    // eating them then, or the app below never sees a finger.
+                    setWindowTouchable(annotationView, !active && !exporting);
                 }
             };
 
@@ -405,6 +409,16 @@ public final class FloatingService extends Service {
         // The receiver's persisted flag must follow the service, else the next
         // corner swipe believes the overlay is up and refuses to summon it.
         GestureLaunchReceiver.clearOverlayRunning(this);
+        // Never leave the helper in ROOT_SPLIT after the overlay is gone: it
+        // would keep swallowing stylus events with no sink left to draw them.
+        try {
+            sendBroadcast(new Intent(GestureLaunchReceiver.ACTION_SET_SPLIT_MODE)
+                    .putExtra(GestureLaunchReceiver.EXTRA_TOKEN, GestureLaunchReceiver.TOKEN)
+                    .putExtra(GestureLaunchReceiver.EXTRA_ENABLED, false));
+        } catch (RuntimeException ignored) {
+            // The process may be going away; the helper also clears split
+            // when its module is disabled.
+        }
         started = false;
         proxyPinned = false;
         ballDrag = false;
@@ -521,6 +535,11 @@ public final class FloatingService extends Service {
         // what turns the previously dropped events into ink strokes.
         AnnotationInputService.setFloatingService(this);
         AnnotationInputService.setInputSink(inputSink);
+        // The helper's split state lives in system_server memory; a switch
+        // left on across a reboot is re-asserted once the sink is registered.
+        if (switchValue(MoreMenuView.Setting.EVENT_PASSTHROUGH)) {
+            requestSplitMode(true);
+        }
 
         // WindowManager may finish the first traversal after addView returns;
         // re-cache the origin then and put the proxy on the real ball rect.
@@ -1157,6 +1176,9 @@ public final class FloatingService extends Service {
             if (setting == MoreMenuView.Setting.FINGER_DRAW && annotationView != null) {
                 annotationView.setFingerDrawEnabled(enabled);
             }
+            if (setting == MoreMenuView.Setting.EVENT_PASSTHROUGH) {
+                requestSplitMode(enabled);
+            }
         }
 
         @Override
@@ -1259,6 +1281,45 @@ public final class FloatingService extends Service {
         final boolean fallback = setting == MoreMenuView.Setting.FINGER_DRAW;
         return getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getBoolean(SWITCH_KEY_PREFIX + setting.name(), fallback);
+    }
+
+    /**
+     * Asks the helper to flip ROOT_SPLIT (the 「事件透传」 switch). The helper
+     * confirms over the Binder sink with TX_SET_ACTIVE, and only that
+     * confirmation makes the canvas drop finger touches. If no confirmation
+     * arrives, the helper is missing or disabled, so the switch reverts: an
+     * unconditioned disable of the canvas would leave the screen without any
+     * working input.
+     */
+    private void requestSplitMode(final boolean enabled) {
+        final Intent intent = new Intent(GestureLaunchReceiver.ACTION_SET_SPLIT_MODE)
+                .putExtra(GestureLaunchReceiver.EXTRA_TOKEN, GestureLaunchReceiver.TOKEN)
+                .putExtra(GestureLaunchReceiver.EXTRA_ENABLED, enabled);
+        try {
+            sendBroadcast(intent);
+        } catch (RuntimeException ignored) {
+            // Broadcast restrictions must not take the overlay down.
+        }
+        if (!enabled) {
+            return;
+        }
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (AnnotationInputService.isSplitActive()) {
+                    return;
+                }
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putBoolean(SWITCH_KEY_PREFIX
+                                + MoreMenuView.Setting.EVENT_PASSTHROUGH.name(), false)
+                        .apply();
+                if (moreMenu != null) {
+                    moreMenu.setToggle(MoreMenuView.Setting.EVENT_PASSTHROUGH, false);
+                }
+                Toast.makeText(FloatingService.this, R.string.ga_split_needs_helper,
+                        Toast.LENGTH_SHORT).show();
+            }
+        }, SPLIT_CONFIRM_MS);
     }
 
     /**
@@ -1384,7 +1445,9 @@ public final class FloatingService extends Service {
         // Invisible views still own their window's touch region. During the
         // screenshot the canvas and the proxy must stop receiving touches, or
         // a stray tap is recorded as a stroke and eaten from the app below.
-        setWindowTouchable(annotationView, visible);
+        // When ROOT_SPLIT is on, the canvas also stays untouchable: the pen
+        // arrives through the Binder sink and fingers belong to the app below.
+        setWindowTouchable(annotationView, visible && !AnnotationInputService.isSplitActive());
         setWindowTouchable(proxy, visible);
     }
 

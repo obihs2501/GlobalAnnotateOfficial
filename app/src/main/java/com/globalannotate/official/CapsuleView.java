@@ -819,12 +819,34 @@ public final class CapsuleView extends FrameLayout {
             if (tool == selected) {
                 float cx = (tool.getLeft() + tool.getRight()) / 2f;
                 float cy = (tool.getTop() + tool.getBottom()) / 2f;
+                // The minimised ball draws its brush in a 48x124dp box that
+                // starts 8dp below the ball top and rotates around the ball
+                // centre. At p == 1 the capsule has to render that exact
+                // composition, or the pen jumps sideways at the hand-over
+                // (the tool slot alone centres the brush in the circle).
+                // In ball layout the tool already draws the ball composition
+                // at ball size; applying the offset and scale a second time
+                // would push the glyph out of the disc.
+                final boolean ballLayout = isBallLayout();
+                float unit = ballDiameterPx / 96f;
+                float offsetPx = ballLayout ? 0f
+                        : 8f * unit + 124f * unit / 2f - ballDiameterPx / 2f;
+                float radians = (float) Math.toRadians(currentToolRotation());
+                float offX = -offsetPx * (float) Math.sin(radians);
+                float offY = offsetPx * (float) Math.cos(radians);
+                float ballScale = ballDiameterPx > 0
+                        ? ballDiameterPx / (96f * density) : 1f;
+                float morphScale = ballLayout ? 1f : 1f + (ballScale - 1f) * collapse;
                 tool.setAlpha(1f);
-                tool.setTranslationX(fx + (anchorX - cx) * collapse);
-                tool.setTranslationY(fy + (anchorY - cy) * collapse);
+                tool.setScaleX(morphScale);
+                tool.setScaleY(morphScale);
+                tool.setTranslationX(fx + (anchorX - cx) * collapse + offX * collapse);
+                tool.setTranslationY(fy + (anchorY - cy) * collapse + offY * collapse);
             } else {
                 // Non-selected tools fade out over the same 0..0.5 collapse
                 // span, so their protrusion blend must go with them.
+                tool.setScaleX(1f);
+                tool.setScaleY(1f);
                 tool.setTranslationX(fx * (1f - collapse));
                 tool.setTranslationY(fy * (1f - collapse));
             }
@@ -849,13 +871,23 @@ public final class CapsuleView extends FrameLayout {
     /** Same as {@link #setToolRotation(float)} but eases over {@code durationMs}. */
     public void animateToolRotation(float target, long durationMs) {
         final float from = currentToolRotation();
-        if (Math.abs(target - from) < 0.5f || durationMs <= 0L) {
-            setToolRotation(target);
+        // Angles are compared modulo 360: the right dock stores 270 here and
+        // -90 in the service, so a naive from->target animation went a whole
+        // extra turn (270 -> -90 = -360) while the capsule collapsed.
+        float delta = target - from;
+        while (delta > 180f) {
+            delta -= 360f;
+        }
+        while (delta < -180f) {
+            delta += 360f;
+        }
+        if (Math.abs(delta) < 0.5f || durationMs <= 0L) {
+            setToolRotation(from + delta);
             return;
         }
         cancelToolRotationAnimation();
         rotationOverrideDeg = from;
-        rotationAnimator = ValueAnimator.ofFloat(from, target);
+        rotationAnimator = ValueAnimator.ofFloat(from, from + delta);
         rotationAnimator.setDuration(durationMs);
         rotationAnimator.setInterpolator(new DecelerateInterpolator());
         rotationAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {

@@ -151,6 +151,12 @@ public final class FloatingService extends Service {
 
     private Types.PenStyle penStyle = Types.PenStyle.BALLPOINT;
     private int penColor = Types.FIXED_COLORS[3];
+    /**
+     * Fallback colour for a tool with no stored colour of its own. The old
+     * single "color" preference seeds it, so an upgrade keeps the colour the
+     * user was working with.
+     */
+    private int defaultPenColor = Types.FIXED_COLORS[3];
 
     /** Per-tool brush state, in the panel's own units; loaded lazily from prefs. */
     private final HashMap<Types.PenStyle, BrushSettings> brushSettings = new HashMap<>();
@@ -625,10 +631,11 @@ public final class FloatingService extends Service {
                 return;
             }
             penStyle = style;
-            annotationView.setPenStyle(style);
+            // Mi Canvas keeps one brush state per pen (width, opacity and
+            // colour): switching a pen restores that pen's own values.
+            applyBrushToView();
             refreshCapsule();
-            // Mi Canvas keeps one brush state per pen: every tool tap re-opens
-            // the popup on that tool's own width / opacity / sensitivity / tip.
+            // Every tool tap re-opens the popup on that tool's own values.
             showBrushPanel(style, anchorX);
         }
 
@@ -719,12 +726,15 @@ public final class FloatingService extends Service {
         float alpha;
         float sensitivity;
         int tip;
+        /** Each pen remembers its own colour, like Mi Canvas' preset colours. */
+        int color;
 
-        BrushSettings(float width, float alpha, float sensitivity, int tip) {
+        BrushSettings(float width, float alpha, float sensitivity, int tip, int color) {
             this.width = width;
             this.alpha = alpha;
             this.sensitivity = sensitivity;
             this.tip = tip;
+            this.color = color;
         }
     }
 
@@ -786,7 +796,7 @@ public final class FloatingService extends Service {
                 return;
             }
             penStyle = style;
-            annotationView.setPenStyle(style);
+            applyBrushToView();
             if (palette != null) {
                 palette.setSelected(style);
             }
@@ -983,12 +993,12 @@ public final class FloatingService extends Service {
         }
     }
 
-    /** Per-tool colours for the arc; the app keeps one colour per session. */
+    /** Per-tool colours for the arc; every pen keeps its own like Mi Canvas. */
     private int[] toolColors() {
         final Types.PenStyle[] styles = Types.PenStyle.values();
         final int[] colors = new int[styles.length];
         for (int i = 0; i < styles.length; i++) {
-            colors[i] = penColor;
+            colors[i] = settingsFor(styles[i]).color;
         }
         return colors;
     }
@@ -1518,6 +1528,7 @@ public final class FloatingService extends Service {
 
     private void applyPenColor(int color) {
         penColor = color | 0xFF000000;
+        settingsFor(penStyle).color = penColor;
         if (annotationView != null) {
             annotationView.setPenColor(penColor);
         }
@@ -1538,12 +1549,19 @@ public final class FloatingService extends Service {
         persistLater();
     }
 
+    /**
+     * Pushes the current tool's remembered brush values onto the canvas. Runs
+     * on every tool switch so width, opacity and colour follow the pen instead
+     * of leaking over from the previous one.
+     */
     private void applyBrushToView() {
         if (annotationView == null) {
             return;
         }
         final BrushSettings settings = settingsFor(penStyle);
+        penColor = settings.color;
         annotationView.setPenStyle(penStyle);
+        annotationView.setPenColor(penColor);
         annotationView.setPenWidth(strokeWidthPx(penStyle, settings.width));
         annotationView.setPenAlpha(Math.round(settings.alpha));
     }
@@ -1560,7 +1578,8 @@ public final class FloatingService extends Service {
                 prefs.getFloat(prefix + "size", tool.defaultSize),
                 prefs.getFloat(prefix + "alpha", MAX_PEN_ALPHA),
                 prefs.getFloat(prefix + "sensitivity", 0.5f),
-                prefs.getInt(prefix + "tip", 2));
+                prefs.getInt(prefix + "tip", 2),
+                prefs.getInt(prefix + "color", defaultPenColor) | 0xFF000000);
         clampBrush(settings, tool);
         brushSettings.put(style, settings);
         return settings;
@@ -1672,6 +1691,9 @@ public final class FloatingService extends Service {
             }
         }
         penColor = prefs.getInt(KEY_COLOR, penColor) | 0xFF000000;
+        // A tool that has never had its own colour stored starts from the
+        // last single colour this app remembered.
+        defaultPenColor = penColor;
     }
 
     private void loadRecentColors() {
@@ -1765,6 +1787,7 @@ public final class FloatingService extends Service {
             editor.putFloat(prefix + "alpha", settings.alpha);
             editor.putFloat(prefix + "sensitivity", settings.sensitivity);
             editor.putInt(prefix + "tip", settings.tip);
+            editor.putInt(prefix + "color", settings.color);
         }
         final StringBuilder joined = new StringBuilder();
         for (int i = 0; i < recentColors.size(); i++) {

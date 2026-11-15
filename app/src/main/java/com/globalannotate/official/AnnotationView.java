@@ -187,6 +187,44 @@ public final class AnnotationView extends View {
         invalidate();
     }
 
+    /**
+     * Keeps ink at the same relative place when the screen rotates. The
+     * overlay window is resized by WindowManager, so the stored points are
+     * rescaled to the new width/height instead of sliding off the screen.
+     * The first layout pass (old size zero) must not scale anything.
+     */
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        if (oldw <= 0 || oldh <= 0 || w <= 0 || h <= 0) {
+            return;
+        }
+        if (w == oldw && h == oldh) {
+            return;
+        }
+        final float sx = (float) w / (float) oldw;
+        final float sy = (float) h / (float) oldh;
+        for (int i = 0; i < strokes.size(); i++) {
+            scaleStroke(strokes.get(i), sx, sy);
+        }
+        for (int i = 0; i < redoStack.size(); i++) {
+            scaleStroke(redoStack.get(i), sx, sy);
+        }
+        if (clearedSnapshot != null) {
+            for (int i = 0; i < clearedSnapshot.size(); i++) {
+                scaleStroke(clearedSnapshot.get(i), sx, sy);
+            }
+        }
+    }
+
+    private static void scaleStroke(Stroke stroke, float sx, float sy) {
+        for (int i = 0; i < stroke.points.size(); i++) {
+            final float[] point = stroke.points.get(i);
+            point[0] *= sx;
+            point[1] *= sy;
+        }
+    }
+
     // ------------------------------------------------------------------
     // Touch
     // ------------------------------------------------------------------

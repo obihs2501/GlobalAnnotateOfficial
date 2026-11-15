@@ -25,12 +25,24 @@ import android.widget.Toast;
 public final class MainActivity extends Activity {
 
     private static final int REQ_NOTIFICATIONS = 1001;
+    /**
+     * Set by the helper's last-resort activity fallback: start the overlay and
+     * finish without showing the launcher screen (the helper expects the
+     * activity to be a transparent trampoline).
+     */
+    private static final String EXTRA_AUTOSTART = "com.globalannotate.extra.AUTOSTART";
 
     private TextView status;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        final Intent launch = getIntent();
+        if (launch != null && launch.getBooleanExtra(EXTRA_AUTOSTART, false)) {
+            startAnnotation();
+            finish();
+            return;
+        }
         // GaMainTheme is translucent; this soft panel keeps the launcher
         // visible behind the small control surface.
         getWindow().setBackgroundDrawable(new ColorDrawable(0xE6F7F7FA));

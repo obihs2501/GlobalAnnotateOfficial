@@ -170,7 +170,10 @@ public final class AppBridge {
         lastActivityFallbackMs = now;
         Intent activity = new Intent()
                 .setComponent(new ComponentName(XActions.APP_PACKAGE, XActions.MAIN_ACTIVITY_CLASS))
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                // MainActivity only starts the service and finishes; the extra
+                // keeps the launcher screen from appearing.
+                .putExtra("com.globalannotate.extra.AUTOSTART", true);
         try {
             context.startActivity(activity);
             GaLog.i("launch fallback: MainActivity start requested");

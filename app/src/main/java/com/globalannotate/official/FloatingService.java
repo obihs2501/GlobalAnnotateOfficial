@@ -162,6 +162,12 @@ public final class FloatingService extends Service {
     private int insetPx;
 
     private Types.PenStyle penStyle = Types.PenStyle.BALLPOINT;
+    /**
+     * Last non-eraser pen. The ERASER gesture toggles: squeeze once selects the
+     * eraser, squeeze again returns to this pen instead of staying on the
+     * eraser forever.
+     */
+    private Types.PenStyle lastDrawingStyle = Types.PenStyle.BALLPOINT;
     private int penColor = Types.FIXED_COLORS[3];
     /**
      * Fallback colour for a tool with no stored colour of its own. The old
@@ -1191,7 +1197,13 @@ public final class FloatingService extends Service {
                 togglePalette();
                 break;
             case ERASER:
-                penStyle = Types.PenStyle.ERASER;
+                // Toggle: the same squeeze returns to the pen that was in use.
+                if (penStyle.eraser) {
+                    penStyle = lastDrawingStyle;
+                } else {
+                    lastDrawingStyle = penStyle;
+                    penStyle = Types.PenStyle.ERASER;
+                }
                 applyBrushToView();
                 refreshCapsule();
                 break;
@@ -1561,6 +1573,14 @@ public final class FloatingService extends Service {
         setWindowTouchable(proxy, visible);
     }
 
+    /**
+     * Makes a window accept or refuse touches. The ink canvas uses an empty
+     * touchable region instead of {@code FLAG_NOT_TOUCHABLE}: HyperOS clamps
+     * every untouchable system alert window to 80% alpha ("setting alpha to
+     * 0.80 to let touches pass through"), which would make all ink translucent
+     * while 事件透传 is on. An empty region blocks input without the alpha
+     * penalty; {@code null} restores the default full-frame region.
+     */
     private void setWindowTouchable(View view, boolean touchable) {
         if (view == null || windowManager == null) {
             return;
@@ -1570,6 +1590,32 @@ public final class FloatingService extends Service {
             return;
         }
         final WindowManager.LayoutParams lp = (WindowManager.LayoutParams) raw;
+        if (view == annotationView) {
+            boolean regionApplied = false;
+            try {
+                final AttachedSurfaceControl control = view.getRootSurfaceControl();
+                if (control != null) {
+                    control.setTouchableRegion(touchable ? null : new Region());
+                    regionApplied = true;
+                }
+            } catch (RuntimeException | LinkageError unsupported) {
+                regionApplied = false;
+            }
+            if (regionApplied) {
+                // Drop a flag left by the pre-region path (or by a fallback on
+                // an earlier frame) so the alpha clamp is released.
+                if ((lp.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0) {
+                    lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                    lp.alpha = 1f;
+                    try {
+                        windowManager.updateViewLayout(view, lp);
+                    } catch (RuntimeException ignored) {
+                        // The window went away with the service.
+                    }
+                }
+                return;
+            }
+        }
         if (touchable) {
             lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         } else {
@@ -1896,6 +1942,10 @@ public final class FloatingService extends Service {
         if (annotationView == null) {
             return;
         }
+        if (!penStyle.eraser) {
+            // Remember the pen the eraser gesture should toggle back to.
+            lastDrawingStyle = penStyle;
+        }
         final BrushSettings settings = settingsFor(penStyle);
         penColor = settings.color;
         annotationView.setPenStyle(penStyle);
@@ -2037,6 +2087,20 @@ public final class FloatingService extends Service {
         // A tool that has never had its own colour stored starts from the
         // last single colour this app remembered.
         defaultPenColor = penColor;
+        if (!penStyle.eraser) {
+            // The eraser gesture must be able to return to the pen the app
+            // started with, not always to the ballpoint.
+            lastDrawingStyle = penStyle;
+        }
+        // Colour is one global value in this build. A pen persisted by an
+        // older build can still carry its own colour; normalise every pen to
+        // the last picked colour so switching pens cannot restore a stale one
+        // (the user saw different colours after fixing all palettes alike).
+        for (Types.PenStyle style : Types.PenStyle.TOOLBAR) {
+            if (!style.eraser) {
+                settingsFor(style).color = penColor;
+            }
+        }
     }
 
     private void loadRecentColors() {

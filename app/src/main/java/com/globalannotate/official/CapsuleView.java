@@ -914,7 +914,13 @@ public final class CapsuleView extends FrameLayout {
     private void handleTap(float x, float y) {
         for (int i = hits.size() - 1; i >= 0; i--) {
             Hit hit = hits.get(i);
-            if (!hit.rect.contains(x, y)) {
+            // Tool boxes carry the official 18dp protrusion (and the collapse
+            // slide) as translations; the cached layout rect must move with
+            // them or taps land on the neighbour.
+            float tx = hit.view.getTranslationX();
+            float ty = hit.view.getTranslationY();
+            if (x < hit.rect.left + tx || x > hit.rect.right + tx
+                    || y < hit.rect.top + ty || y > hit.rect.bottom + ty) {
                 continue;
             }
             switch (hit.kind) {

@@ -21,6 +21,7 @@
     <string name="ga_color_picker_hint">取色器即将推出</string>
     <string name="ga_export_running">正在保存…</string>
     <string name="ga_export_saved">已保存</string>
+    <string name="ga_export_saved_ink">已保存（仅批注层，未取得截屏）</string>
     <string name="ga_export_failed">保存失败</string>
 
     <string name="ga_notification_channel">悬浮批注</string>

@@ -1146,6 +1146,7 @@ public final class FloatingService extends Service {
                         final Uri uri = pdf
                                 ? Exporter.savePdf(FloatingService.this, null, background, ink)
                                 : Exporter.savePng(FloatingService.this, ink, background);
+                        final boolean withBackground = background != null;
                         if (background != null) {
                             background.recycle();
                         }
@@ -1154,9 +1155,17 @@ public final class FloatingService extends Service {
                             @Override
                             public void run() {
                                 setOverlayVisible(true);
-                                Toast.makeText(FloatingService.this,
-                                        uri != null ? R.string.ga_export_saved
-                                                : R.string.ga_export_failed,
+                                final int message;
+                                if (uri == null) {
+                                    message = R.string.ga_export_failed;
+                                } else if (withBackground) {
+                                    message = R.string.ga_export_saved;
+                                } else {
+                                    // Root was refused: only the ink layer
+                                    // could be written.
+                                    message = R.string.ga_export_saved_ink;
+                                }
+                                Toast.makeText(FloatingService.this, message,
                                         Toast.LENGTH_SHORT).show();
                             }
                         });

@@ -97,6 +97,11 @@ public final class GestureLauncher {
         boolean isPenKey = (keyCode >= XPenKeys.SQUEEZE && keyCode <= XPenKeys.SLIDE_DOWN)
                 || event.getScanCode() == XPenKeys.SCANCODE_SQUEEZE_RAW;
         if (!isPenKey) return chain.proceed();
+        // One physical squeeze can produce more than one key event (and the
+        // ROM reports its own double tap separately). Log the raw stream so a
+        // device session can tell a bounce from a deliberate second squeeze.
+        GaLog.i("pen key code=" + keyCode + " action=" + event.getAction()
+                + " repeat=" + event.getRepeatCount() + " scan=" + event.getScanCode());
 
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
             switch (keyCode) {

@@ -9,6 +9,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.Context;
 import android.content.res.Configuration;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
@@ -16,7 +18,9 @@ import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.drawable.Icon;
+import android.net.Uri;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
@@ -31,9 +35,13 @@ import android.widget.Toast;
 import com.globalannotate.official.panels.BrushPanel;
 import com.globalannotate.official.panels.ColorPanel;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Foreground overlay service. It owns three windows, bottom to top:
@@ -76,10 +84,16 @@ public final class FloatingService extends Service {
      */
     private static final float COLOR_PANEL_WIDTH_DP = 360f;
     private static final float BRUSH_PANEL_WIDTH_DP = 288f;
+    /** The more card is 200dp wide (official MoreActionPopupWindow). */
+    private static final float MORE_MENU_WIDTH_DP = 200f;
     /** Free space kept between a panel and the capsule. */
     private static final float PANEL_GAP_DP = 12f;
     /** Both panels play a 150ms exit before their window is detached. */
     private static final long PANEL_HIDE_MS = 180L;
+    /** Overlay frames to skip before a screenshot, so the hidden views are gone. */
+    private static final long SCREENSHOT_HIDE_MS = 260L;
+    /** Root grants can block on a prompt; never leave the worker stuck. */
+    private static final long SCREENSHOT_TIMEOUT_SEC = 6L;
     /** Brush/colour edits are written once the sliders have been quiet this long. */
     private static final long PERSIST_DELAY_MS = 400L;
 
@@ -87,6 +101,8 @@ public final class FloatingService extends Service {
     private static final String KEY_COLOR = "color";
     private static final String KEY_RECENT_COLORS = "recentColors";
     private static final String BRUSH_KEY_PREFIX = "brush_";
+    /** One persisted boolean per MoreMenuView switch. */
+    private static final String SWITCH_KEY_PREFIX = "switch_";
     private static final int MAX_RECENT_COLORS = 12;
     private static final int MIN_PEN_ALPHA = 3;
     private static final int MAX_PEN_ALPHA = 255;
@@ -141,8 +157,10 @@ public final class FloatingService extends Service {
 
     private ColorPanel colorPanel;
     private BrushPanel brushPanel;
+    private MoreMenuView moreMenu;
     private FrameLayout colorPanelHost;
     private FrameLayout brushPanelHost;
+    private FrameLayout moreMenuHost;
     /** Window root of the panel currently attached, or null. */
     private FrameLayout openPanelHost;
     /** Invalidates the delayed window removal of an already dismissed panel. */
@@ -338,6 +356,8 @@ public final class FloatingService extends Service {
         annotationView = new AnnotationView(this);
         annotationView.setPenStyle(penStyle);
         annotationView.setPenColor(penColor);
+        // Finger drawing defaults on; see switchValue().
+        annotationView.setFingerDrawEnabled(switchValue(MoreMenuView.Setting.FINGER_DRAW));
         applyBrushToView();
         annotationView.setOnTouchListener(annotationTouch);
         if (!addOverlay(annotationView, overlayParams())) {
@@ -562,8 +582,7 @@ public final class FloatingService extends Service {
 
         @Override
         public void onMore(int anchorX) {
-            Toast.makeText(FloatingService.this, R.string.ga_more_hint,
-                    Toast.LENGTH_SHORT).show();
+            showMoreMenu(anchorX);
         }
     };
 
@@ -685,6 +704,51 @@ public final class FloatingService extends Service {
         }
     };
 
+    private final MoreMenuView.Listener moreMenuListener = new MoreMenuView.Listener() {
+        @Override
+        public void onAction(MoreMenuView.Action action) {
+            dismissPanels();
+            switch (action) {
+                case SAVE_IMAGE:
+                    exportAnnotation(false);
+                    break;
+                case SAVE_PDF:
+                    exportAnnotation(true);
+                    break;
+                case CLEAR_NOTES:
+                    if (annotationView != null) {
+                        annotationView.clear();
+                        refreshCapsule();
+                    }
+                    break;
+                case EXIT_ANNOTATION:
+                    stopSelf();
+                    break;
+                case PEN_GESTURES:
+                case LONG_SCREENSHOT:
+                default:
+                    Toast.makeText(FloatingService.this, R.string.ga_more_hint,
+                            Toast.LENGTH_SHORT).show();
+                    break;
+            }
+        }
+
+        @Override
+        public void onToggle(MoreMenuView.Setting setting, boolean enabled) {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putBoolean(SWITCH_KEY_PREFIX + setting.name(), enabled)
+                    .apply();
+            if (setting == MoreMenuView.Setting.FINGER_DRAW && annotationView != null) {
+                annotationView.setFingerDrawEnabled(enabled);
+            }
+        }
+
+        @Override
+        public void onDismiss() {
+            dismissPanels();
+        }
+    };
+
     private ColorPanel ensureColorPanel() {
         if (colorPanel == null) {
             colorPanel = new ColorPanel(this, colorPanelListener);
@@ -699,6 +763,14 @@ public final class FloatingService extends Service {
             brushPanelHost = newPanelHost(brushPanel);
         }
         return brushPanel;
+    }
+
+    private MoreMenuView ensureMoreMenu() {
+        if (moreMenu == null) {
+            moreMenu = new MoreMenuView(this, moreMenuListener);
+            moreMenuHost = newPanelHost(moreMenu);
+        }
+        return moreMenu;
     }
 
     private FrameLayout newPanelHost(View panel) {
@@ -731,6 +803,140 @@ public final class FloatingService extends Service {
         panel.showAt(anchorX, panelAnchorY(origin, height),
                 insetPx, Math.max(insetPx, screenH - insetPx));
         pinPanelSize(panel, width, height);
+    }
+
+    /** Opens the more menu on the "more" slot's anchor. */
+    private void showMoreMenu(int anchorX) {
+        if (!started || host == null) {
+            return;
+        }
+        final MoreMenuView menu = ensureMoreMenu();
+        final MoreMenuView.Setting[] settings = MoreMenuView.Setting.values();
+        for (MoreMenuView.Setting setting : settings) {
+            menu.setToggle(setting, switchValue(setting));
+        }
+
+        final int width = panelWidthPx(MORE_MENU_WIDTH_DP);
+        final int height = panelHeightPx(menu.measuredHeightForWidth(width));
+        final int[] origin = placePanel(menu, moreMenuHost, width, height, anchorX);
+        if (origin == null) {
+            return;
+        }
+        menu.showAt(anchorX, panelAnchorY(origin, height),
+                insetPx, Math.max(insetPx, screenH - insetPx));
+        pinPanelSize(menu, width, height);
+    }
+
+    /**
+     * A switch's stored value. Finger drawing stays on by default: without the
+     * passthrough helper, turning it off would leave the screen inert.
+     */
+    private boolean switchValue(MoreMenuView.Setting setting) {
+        final boolean fallback = setting == MoreMenuView.Setting.FINGER_DRAW;
+        return getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getBoolean(SWITCH_KEY_PREFIX + setting.name(), fallback);
+    }
+
+    /** Saves the annotations over a root screenshot, or as an ink-only file. */
+    private void exportAnnotation(final boolean pdf) {
+        if (annotationView == null) {
+            return;
+        }
+        final Bitmap ink = Exporter.renderFullScreen(annotationView, screenW, screenH);
+        if (ink == null) {
+            Toast.makeText(this, R.string.ga_export_failed, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Toast.makeText(this, R.string.ga_export_running, Toast.LENGTH_SHORT).show();
+
+        // Hide the overlay so the ball, capsule and ink are not baked into the
+        // background; the transparent ink layer was captured before hiding.
+        setOverlayVisible(false);
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                final HandlerThread worker = new HandlerThread("ga-export");
+                worker.start();
+                new Handler(worker.getLooper()).post(new Runnable() {
+                    @Override
+                    public void run() {
+                        final Bitmap background = captureScreenRoot();
+                        final Uri uri = pdf
+                                ? Exporter.savePdf(FloatingService.this, null, background, ink)
+                                : Exporter.savePng(FloatingService.this, ink, background);
+                        if (background != null) {
+                            background.recycle();
+                        }
+                        ink.recycle();
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                setOverlayVisible(true);
+                                Toast.makeText(FloatingService.this,
+                                        uri != null ? R.string.ga_export_saved
+                                                : R.string.ga_export_failed,
+                                        Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                        worker.quitSafely();
+                    }
+                });
+            }
+        }, SCREENSHOT_HIDE_MS);
+    }
+
+    private void setOverlayVisible(boolean visible) {
+        final int visibility = visible ? View.VISIBLE : View.INVISIBLE;
+        if (annotationView != null) {
+            annotationView.setVisibility(visibility);
+        }
+        if (host != null) {
+            host.setVisibility(visibility);
+        }
+    }
+
+    /**
+     * Root screenshot through {@code su -c screencap -p}. KernelSU may show a
+     * grant prompt the first time, so a watchdog kills the process instead of
+     * leaving the export worker blocked. Returns null when root is refused or
+     * the PNG does not decode; the export then saves the ink layer alone.
+     */
+    private static Bitmap captureScreenRoot() {
+        Process process = null;
+        try {
+            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "screencap -p"});
+            final ByteArrayOutputStream buffer = new ByteArrayOutputStream(1 << 22);
+            final InputStream stream = process.getInputStream();
+            final Thread reader = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    final byte[] chunk = new byte[64 * 1024];
+                    try {
+                        int read;
+                        while ((read = stream.read(chunk)) > 0) {
+                            buffer.write(chunk, 0, read);
+                        }
+                    } catch (IOException ignored) {
+                        // Killed by the watchdog or a broken pipe.
+                    }
+                }
+            }, "ga-screencap-reader");
+            reader.start();
+            if (!process.waitFor(SCREENSHOT_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                reader.join(500L);
+                return null;
+            }
+            reader.join(2000L);
+            final byte[] png = buffer.toByteArray();
+            return png.length > 0
+                    ? BitmapFactory.decodeByteArray(png, 0, png.length) : null;
+        } catch (IOException | InterruptedException | SecurityException error) {
+            if (process != null) {
+                process.destroyForcibly();
+            }
+            return null;
+        }
     }
 
     /** Opens the colour editor on the current pen colour and opacity. */
@@ -915,6 +1121,9 @@ public final class FloatingService extends Service {
         }
         if (brushPanel != null) {
             brushPanel.hide();
+        }
+        if (moreMenu != null) {
+            moreMenu.hide();
         }
     }
 

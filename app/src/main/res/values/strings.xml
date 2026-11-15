@@ -17,6 +17,9 @@
     <string name="ga_service_failed">无法启动批注服务</string>
     <string name="ga_more_hint">更多功能即将推出</string>
     <string name="ga_color_picker_hint">取色器即将推出</string>
+    <string name="ga_export_running">正在保存…</string>
+    <string name="ga_export_saved">已保存</string>
+    <string name="ga_export_failed">保存失败</string>
 
     <string name="ga_notification_channel">悬浮批注</string>
     <string name="ga_notification_channel_desc">保持全局批注在其它应用上层运行</string>

@@ -60,6 +60,8 @@ public final class AnnotationView extends View {
     private float penWidth;
     /** Opacity from the brush panel, Mi Canvas' raw 3..255 units. */
     private int penAlpha = 255;
+    /** Whether a finger starts a stroke; stylus input always draws. */
+    private boolean fingerDrawEnabled = true;
 
     private Stroke active;
     private int activePointerId = MotionEvent.INVALID_POINTER_ID;
@@ -105,6 +107,14 @@ public final class AnnotationView extends View {
     /** Pen opacity in Mi Canvas' raw 3..255 units; existing strokes keep theirs. */
     public void setPenAlpha(int alpha) {
         penAlpha = Math.max(3, Math.min(255, alpha));
+    }
+
+    /**
+     * Turns finger strokes on or off ("手指涂画" in the more menu). The stylus
+     * always draws; turning fingers off only stops them starting ink.
+     */
+    public void setFingerDrawEnabled(boolean enabled) {
+        fingerDrawEnabled = enabled;
     }
 
     public Types.PenStyle penStyle() {
@@ -164,6 +174,13 @@ public final class AnnotationView extends View {
         if (action == MotionEvent.ACTION_DOWN) {
             // A previous gesture was lost; close it instead of leaking it.
             finishActive();
+            if (!fingerDrawEnabled
+                    && event.getToolType(0) != MotionEvent.TOOL_TYPE_STYLUS) {
+                // Swallow: without the passthrough helper the window would eat
+                // the touch anyway, and a stroke here would be unwanted ink.
+                activePointerId = MotionEvent.INVALID_POINTER_ID;
+                return true;
+            }
             activePointerId = event.getPointerId(0);
             beginStroke(event, 0);
             invalidate();

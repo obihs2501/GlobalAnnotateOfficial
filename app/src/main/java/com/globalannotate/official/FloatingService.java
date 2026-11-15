@@ -188,6 +188,7 @@ public final class FloatingService extends Service {
             started = true;
             if (!showOverlays()) {
                 started = false;
+                Toast.makeText(this, R.string.ga_service_failed, Toast.LENGTH_LONG).show();
                 stopSelf();
             }
         }

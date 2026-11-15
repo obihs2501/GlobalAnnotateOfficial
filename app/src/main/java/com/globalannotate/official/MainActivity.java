@@ -31,8 +31,8 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // The platform Material theme is opaque; soften it so the launcher stays
-        // visible behind this small control panel.
+        // GaMainTheme is translucent; this soft panel keeps the launcher
+        // visible behind the small control surface.
         getWindow().setBackgroundDrawable(new ColorDrawable(0xE6F7F7FA));
         setContentView(buildContent());
     }

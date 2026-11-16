@@ -1885,6 +1885,7 @@ public final class FloatingService extends Service {
                             }
                             final byte[] bytes = new byte[length];
                             in.readFully(bytes);
+                            Log.d(TAG, "socket event bytes=" + length);
                             deliverMonitorEvent(bytes);
                         }
                     } catch (IOException error) {

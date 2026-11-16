@@ -2010,7 +2010,10 @@ public final class FloatingService extends Service {
             final String command = "input swipe " + Math.max(0, x) + " "
                     + Math.max(0, fromY) + " " + Math.max(0, x) + " "
                     + Math.max(0, toY) + " " + Math.max(120, durationMs);
-            process = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
+            final String[] suCmd = suCommand(command);
+            if (suCmd == null) return false;
+            process = Runtime.getRuntime().exec(suCmd);
+            drainAndClose(process);
             longSwipeProcess = process;
             if (!exportJob || pendingExportMode != EXPORT_LONG) {
                 process.destroyForcibly();
@@ -2204,13 +2207,52 @@ public final class FloatingService extends Service {
         if (!exportJob || pendingExportInk == null) {
             return;
         }
-        // Regular PNG/PDF export uses the public MediaProjection path only.
-        // The old code tried `su -c screencap` first and waited up to two
-        // seconds for a root grant that is often refused/hidden, which made
-        // every save stall before the consent dialog even appeared. Skipping
-        // that attempt removes the wait and the root dependency entirely.
-        // The projection session is reused, so only the first save asks.
-        rootCaptureFailed = true;
+        // Prefer root capture: it is fast and needs no MediaProjection consent
+        // dialog. Falls back to the reusable public projection session only if
+        // root is genuinely unavailable. The su probe resolves KernelSU's
+        // hidden-binary quirk, and screencap writes to a file (no pipe CRLF
+        // corruption), so a working root grant succeeds on the first try.
+        if (!rootCaptureFailed) {
+            setOverlayVisible(false);
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!exportJob) return;
+                    final HandlerThread worker = new HandlerThread("ga-root-export");
+                    worker.start();
+                    new Handler(worker.getLooper()).post(new Runnable() {
+                        @Override
+                        public void run() {
+                            final Bitmap background = captureScreenRoot();
+                            final boolean ok = background != null;
+                            if (!ok) rootCaptureFailed = true;
+                            mainHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    worker.quitSafely();
+                                    if (!exportJob) {
+                                        recycleQuietly(background);
+                                        return;
+                                    }
+                                    if (ok) {
+                                        finishPendingExport(background);
+                                    } else {
+                                        fallbackToProjection();
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+            }, SCREENSHOT_HIDE_MS);
+            return;
+        }
+        fallbackToProjection();
+    }
+
+    /** Falls back to the public MediaProjection path (reuses a live session). */
+    private void fallbackToProjection() {
+        if (!exportJob || pendingExportInk == null) return;
         final ScreenCaptureSession session = captureSession;
         if (session != null && !session.isStopped()) {
             captureWithProjection(session, pendingExportMode, pendingExportInk);
@@ -2471,64 +2513,132 @@ public final class FloatingService extends Service {
         return captureScreenRoot(ROOT_SCREENSHOT_TIMEOUT_SEC);
     }
 
+    /** Cached resolved su path; null = unresolved, "" = no usable su. */
+    private static volatile String resolvedSu;
+
+    /**
+     * Resolves an executable {@code su} once, then caches it. KernelSU's
+     * SU-compat mode hides the file from an app's mount namespace, so a PATH
+     * lookup of the bare name ("su") fails even for a granted app — but
+     * exec'ing the absolute path still escalates. Magisk exposes "su" normally.
+     */
+    private static String[] suCommand(String shellCommand) {
+        String su = resolvedSu;
+        if (su == null) {
+            final String[] candidates = {
+                    "/system/bin/su", "/system/xbin/su", "/sbin/su", "su"
+            };
+            for (String candidate : candidates) {
+                Process probe = null;
+                try {
+                    probe = Runtime.getRuntime().exec(new String[]{candidate, "-c", "id -u"});
+                    drainAndClose(probe);
+                    if (!probe.waitFor(2L, TimeUnit.SECONDS)) {
+                        probe.destroyForcibly();
+                        continue;
+                    }
+                    if (probe.exitValue() == 0) {
+                        su = candidate;
+                        break;
+                    }
+                } catch (IOException | InterruptedException | SecurityException error) {
+                    if (probe != null) probe.destroyForcibly();
+                    if (error instanceof InterruptedException) Thread.currentThread().interrupt();
+                }
+            }
+            resolvedSu = (su == null) ? "" : su;
+        }
+        if (su == null || su.isEmpty()) {
+            return null;
+        }
+        return new String[]{su, "-c", shellCommand};
+    }
+
+    /** Drains a process's stdout/stderr so it cannot block on a full pipe. */
+    private static void drainAndClose(Process process) {
+        drainStream(process.getInputStream());
+        drainStream(process.getErrorStream());
+    }
+
+    private static void drainStream(InputStream stream) {
+        if (stream == null) return;
+        final Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final byte[] chunk = new byte[4096];
+                try {
+                    while (stream.read(chunk) > 0) { /* discard */ }
+                } catch (IOException ignored) {
+                    // process killed / pipe closed
+                } finally {
+                    try { stream.close(); } catch (IOException ignored) { }
+                }
+            }
+        });
+        t.setDaemon(true);
+        t.start();
+    }
+
     private static Bitmap captureScreenRoot(long timeoutSeconds) {
+        final FloatingService service = instance;
+        if (service == null) return null;
+
+        // Write the PNG to a file instead of reading it off stdout: through a
+        // pipe some ROMs translate LF->CRLF and corrupt/truncate the PNG bytes.
+        final java.io.File shot = new java.io.File(service.getCacheDir(), "ga-root-shot.png");
+        // chmod guarantees the app process can read the root-owned file even
+        // if the ROM's umask/SELinux would otherwise leave it unreadable.
+        final String command = "screencap -p > " + shot.getAbsolutePath()
+                + " && chmod 666 " + shot.getAbsolutePath();
+        final String[] suCmd = suCommand(command);
+        if (suCmd == null) {
+            Log.w(TAG, "root screenshot unavailable: no usable su");
+            return null;
+        }
+
         Process process = null;
         try {
-            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "screencap -p"});
-            final ByteArrayOutputStream buffer = new ByteArrayOutputStream(1 << 22);
-            final InputStream stream = process.getInputStream();
-            final InputStream errorStream = process.getErrorStream();
-            final Thread reader = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    final byte[] chunk = new byte[64 * 1024];
-                    try {
-                        int read;
-                        while ((read = stream.read(chunk)) > 0) {
-                            buffer.write(chunk, 0, read);
-                        }
-                    } catch (IOException ignored) {
-                        // Killed by the watchdog or a broken pipe.
-                    }
-                }
-            }, "ga-screencap-reader");
-            final Thread errorReader = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    final byte[] chunk = new byte[4096];
-                    try {
-                        while (errorStream.read(chunk) > 0) {
-                            // Drain stderr so a failed su cannot block the process.
-                        }
-                    } catch (IOException ignored) {
-                        // Best effort.
-                    }
-                }
-            }, "ga-screencap-error-reader");
-            reader.start();
-            errorReader.start();
+            // Remove any stale file from a previous interrupted capture.
+            if (shot.exists() && !shot.delete()) {
+                Log.w(TAG, "root screenshot: could not remove stale shot");
+            }
+            process = Runtime.getRuntime().exec(suCmd);
+            drainAndClose(process);
             if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
-                reader.join(500L);
-                errorReader.join(500L);
                 return null;
             }
-            reader.join(2000L);
-            errorReader.join(500L);
-            if (process.exitValue() != 0) {
+            if (process.exitValue() != 0 || !shot.exists() || shot.length() == 0) {
                 return null;
             }
-            final byte[] png = buffer.toByteArray();
-            return png.length > 0
+            final byte[] png = readFileBytes(shot);
+            return png != null && png.length > 0
                     ? BitmapFactory.decodeByteArray(png, 0, png.length) : null;
         } catch (IOException | InterruptedException | SecurityException error) {
-            if (process != null) {
-                process.destroyForcibly();
-            }
-            if (error instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-            }
+            if (process != null) process.destroyForcibly();
+            if (error instanceof InterruptedException) Thread.currentThread().interrupt();
+            Log.w(TAG, "root screenshot failed", error);
             return null;
+        } finally {
+            if (shot.exists()) shot.delete();
+        }
+    }
+
+    private static byte[] readFileBytes(java.io.File file) {
+        java.io.FileInputStream in = null;
+        try {
+            in = new java.io.FileInputStream(file);
+            final ByteArrayOutputStream out = new ByteArrayOutputStream((int) file.length());
+            final byte[] chunk = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(chunk)) > 0) out.write(chunk, 0, read);
+            return out.toByteArray();
+        } catch (IOException e) {
+            return null;
+        } finally {
+            if (in != null) {
+                try { in.close(); } catch (IOException ignored) { }
+            }
         }
     }
 

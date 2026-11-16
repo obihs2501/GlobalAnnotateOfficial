@@ -8,9 +8,9 @@ import android.view.InputEvent;
 import android.view.InputEventReceiver;
 import android.view.MotionEvent;
 
-import java.io.OutputStream;
-import java.net.LocalSocket;
-import java.net.LocalSocketAddress;
+import java.io.DataOutputStream;
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
 
 /**
  * Root-side stylus gesture monitor, launched with {@code app_process} from the
@@ -39,7 +39,7 @@ public final class StylusMonitor {
     private static Object monitor;            // android.view.InputMonitor
     private static InputEventReceiver receiver;
     private static LocalSocket socket;
-    private static OutputStream out;
+    private static DataOutputStream out;
 
     private StylusMonitor() {
     }
@@ -67,7 +67,7 @@ public final class StylusMonitor {
             socket = new LocalSocket();
             socket.connect(new LocalSocketAddress(SOCKET_NAME,
                     LocalSocketAddress.Namespace.ABSTRACT));
-            out = socket.getOutputStream();
+            out = new DataOutputStream(socket.getOutputStream());
             diag("connected to " + SOCKET_NAME);
             return true;
         } catch (Throwable error) {

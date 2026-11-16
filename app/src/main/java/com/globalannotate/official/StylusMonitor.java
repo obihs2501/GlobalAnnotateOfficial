@@ -11,7 +11,6 @@ import android.os.Parcel;
 import android.os.RemoteException;
 import android.util.Log;
 import android.view.InputChannel;
-import android.view.InputDevice;
 import android.view.InputEvent;
 import android.view.InputEventReceiver;
 import android.view.MotionEvent;
@@ -131,9 +130,10 @@ public final class StylusMonitor {
         try {
             if (event instanceof MotionEvent) {
                 final MotionEvent motion = (MotionEvent) event;
+                // MotionEvent.TOOL_TYPE_STYLUS = 3, TOOL_TYPE_ERASER = 4.
+                // Constants are inlined here because they are @hidden in the SDK.
                 final int tool = motion.getToolType(0);
-                if (tool == InputDevice.TOOL_TYPE_STYLUS
-                        || tool == InputDevice.TOOL_TYPE_ERASER) {
+                if (tool == 3 || tool == 4) {
                     forward(motion);
                 }
             }

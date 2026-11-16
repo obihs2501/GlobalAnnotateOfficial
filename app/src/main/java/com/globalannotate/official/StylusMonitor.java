@@ -109,6 +109,9 @@ public final class StylusMonitor {
                 // MotionEvent.TOOL_TYPE_STYLUS = 3, TOOL_TYPE_ERASER = 4
                 // (hidden constants in the SDK).
                 final int tool = motion.getToolType(0);
+                final int action = motion.getActionMasked();
+                diag("event tool=" + tool + " action=" + action
+                        + " src=" + motion.getSource());
                 if (tool == 3 || tool == 4) {
                     forward(motion);
                 }

@@ -365,6 +365,9 @@ public final class FloatingService extends Service {
             new AnnotationInputService.InputSink() {
                 @Override
                 public void onStylusEvent(MotionEvent event) {
+                    Log.d(TAG, "inputSink event: tool=" + event.getToolType(0)
+                            + " action=" + event.getActionMasked()
+                            + " started=" + started + " exporting=" + exporting);
                     if (!started || exporting) {
                         return;
                     }
@@ -1923,6 +1926,8 @@ public final class FloatingService extends Service {
             parcel.unmarshall(bytes, 0, bytes.length);
             parcel.setDataPosition(0);
             event = MotionEvent.CREATOR.createFromParcel(parcel);
+            Log.d(TAG, "monitor event received: tool=" + event.getToolType(0)
+                    + " action=" + event.getActionMasked());
             final MotionEvent delivered = event;
             mainHandler.post(new Runnable() {
                 @Override

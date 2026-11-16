@@ -260,6 +260,8 @@ public final class FloatingService extends Service {
     private int insetPx;
 
     private Types.PenStyle penStyle = Types.PenStyle.BALLPOINT;
+    /** True while automatic pressure erase overrides the displayed tool with ERASER. */
+    private boolean autoEraseUiActive;
     /**
      * Last non-eraser pen. The ERASER gesture toggles: squeeze once selects the
      * eraser, squeeze again returns to this pen instead of staying on the
@@ -697,6 +699,12 @@ public final class FloatingService extends Service {
         updateScreenMetrics();
 
         annotationView = new AnnotationView(this);
+        annotationView.setAutomaticEraseListener(new AnnotationView.AutomaticEraseListener() {
+            @Override
+            public void onAutomaticEraseChanged(boolean active) {
+                onAutoPressureEraseChanged(active);
+            }
+        });
         annotationView.setFocusPenGestureListener(new FocusPenGestureDetector.Listener() {
             @Override
             public void onGesture(String name) {
@@ -1068,13 +1076,39 @@ public final class FloatingService extends Service {
         }
     }
 
+    /**
+     * Mirrors automatic pressure erase in the floating UI: while a pen contact
+     * is erasing under pressure, the ball and capsule show the ERASER glyph
+     * instead of the user's selected pen. The selected {@link #penStyle} is left
+     * untouched, so lifting the pen restores the original pen/params exactly,
+     * and a manual eraser selection is never mistaken for an automatic one.
+     */
+    private void onAutoPressureEraseChanged(boolean active) {
+        if (autoEraseUiActive == active) {
+            return;
+        }
+        autoEraseUiActive = active;
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                refreshCapsule();
+            }
+        });
+    }
+
+    /** The tool that the floating UI should currently display. */
+    private Types.PenStyle displayedStyle() {
+        return autoEraseUiActive ? Types.PenStyle.ERASER : penStyle;
+    }
+
     private void refreshCapsule() {
         if (host == null || annotationView == null) {
             return;
         }
-        host.setBallGlyph(penStyle, penColor);
-        host.ball().setBrush(penStyle, penColor);
-        host.capsule().update(penStyle, penColor,
+        final Types.PenStyle shown = displayedStyle();
+        host.setBallGlyph(shown, penColor);
+        host.ball().setBrush(shown, penColor);
+        host.capsule().update(shown, penColor,
                 annotationView.canUndo(), annotationView.canRedo());
     }
 
@@ -2176,43 +2210,19 @@ public final class FloatingService extends Service {
         if (!exportJob || pendingExportInk == null) {
             return;
         }
+        // Regular PNG/PDF export uses the public MediaProjection path only.
+        // The old code tried `su -c screencap` first and waited up to two
+        // seconds for a root grant that is often refused/hidden, which made
+        // every save stall before the consent dialog even appeared. Skipping
+        // that attempt removes the wait and the root dependency entirely.
+        // The projection session is reused, so only the first save asks.
+        rootCaptureFailed = true;
         final ScreenCaptureSession session = captureSession;
-        if (rootCaptureFailed && pendingExportMode != EXPORT_LONG
-                && session != null && !session.isStopped()) {
+        if (session != null && !session.isStopped()) {
             captureWithProjection(session, pendingExportMode, pendingExportInk);
-            return;
-        }
-        if (rootCaptureFailed) {
+        } else {
             requestProjectionConsent();
-            return;
         }
-
-        final HandlerThread worker = new HandlerThread("ga-root-export");
-        worker.start();
-        new Handler(worker.getLooper()).post(new Runnable() {
-            @Override
-            public void run() {
-                final Bitmap background = captureScreenRoot();
-                if (background == null) {
-                    rootCaptureFailed = true;
-                }
-                mainHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        worker.quitSafely();
-                        if (!exportJob) {
-                            recycleQuietly(background);
-                            return;
-                        }
-                        if (background != null) {
-                            finishPendingExport(background);
-                        } else {
-                            requestProjectionConsent();
-                        }
-                    }
-                });
-            }
-        });
     }
 
     /** Starts the one-shot system consent dialog, keeping the ink layer alive. */

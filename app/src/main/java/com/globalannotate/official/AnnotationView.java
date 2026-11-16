@@ -172,6 +172,31 @@ public final class AnnotationView extends View {
     private float activeEraserRadius;
     private FocusPenGestureDetector focusPenDetector;
 
+    /** Notified once when automatic pressure erase starts/ends for a stroke. */
+    public interface AutomaticEraseListener {
+        void onAutomaticEraseChanged(boolean active);
+    }
+
+    private AutomaticEraseListener automaticEraseListener;
+
+    /** Sets the listener used to mirror auto-erase state in the floating UI. */
+    public void setAutomaticEraseListener(AutomaticEraseListener listener) {
+        automaticEraseListener = listener;
+    }
+
+    private void setPressureEraserActive(boolean active) {
+        if (pressureEraserActive == active) {
+            return;
+        }
+        pressureEraserActive = active;
+        // Fires only on a real transition. shouldStartPressureErase() already
+        // guards against re-entering the active state within one contact, so
+        // start/end are each delivered once.
+        if (automaticEraseListener != null) {
+            automaticEraseListener.onAutomaticEraseChanged(active);
+        }
+    }
+
     public AnnotationView(Context context) {
         super(context);
         // CLEAR is only reliable on a software canvas.
@@ -463,7 +488,7 @@ public final class AnnotationView extends View {
             }
             activePointerId = event.getPointerId(0);
             currentContactIsStylus = toolType == MotionEvent.TOOL_TYPE_STYLUS;
-            pressureEraserActive = false;
+            setPressureEraserActive(false);
             if (strokeEraseEnabled && penStyle.eraser) {
                 beginStrokeErase(event, 0,
                         penWidth * widthFactor(Types.PenStyle.ERASER) * 0.5f);
@@ -471,7 +496,7 @@ public final class AnnotationView extends View {
                 return true;
             }
             if (shouldStartPressureErase(event.getPressure(0))) {
-                pressureEraserActive = true;
+                setPressureEraserActive(true);
                 redoStack.clear();
                 beginStrokeErase(event, 0, pressureEraserRadius);
             } else {
@@ -514,7 +539,7 @@ public final class AnnotationView extends View {
                     processStrokeSample(event, index, -1);
                 }
                 finishActive();
-                pressureEraserActive = false;
+                setPressureEraserActive(false);
                 currentContactIsStylus = false;
                 activePointerId = MotionEvent.INVALID_POINTER_ID;
                 invalidate();
@@ -524,7 +549,7 @@ public final class AnnotationView extends View {
 
         if (action == MotionEvent.ACTION_CANCEL) {
             finishActive();
-            pressureEraserActive = false;
+            setPressureEraserActive(false);
             currentContactIsStylus = false;
             activePointerId = MotionEvent.INVALID_POINTER_ID;
             invalidate();
@@ -592,7 +617,7 @@ public final class AnnotationView extends View {
             active = null;
         }
         redoStack.clear();
-        pressureEraserActive = true;
+        setPressureEraserActive(true);
         final float x = sampleX(event, pointerIndex, historyIndex);
         final float y = sampleY(event, pointerIndex, historyIndex);
         activeEraserRadius = pressureEraserRadius;

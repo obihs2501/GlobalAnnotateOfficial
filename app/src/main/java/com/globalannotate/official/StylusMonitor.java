@@ -112,7 +112,7 @@ public final class StylusMonitor {
                 final int action = motion.getActionMasked();
                 diag("event tool=" + tool + " action=" + action
                         + " src=" + motion.getSource());
-                if (tool == 3 || tool == 4) {
+                if (tool == 3 || tool == 4 || tool == 1 || tool == 2) {  // DIAG: accept all
                     forward(motion);
                 }
             }

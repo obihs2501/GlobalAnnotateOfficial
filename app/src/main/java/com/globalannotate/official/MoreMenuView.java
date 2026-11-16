@@ -102,7 +102,8 @@ public final class MoreMenuView extends LinearLayout {
     public enum Setting {
         FINGER_DRAW("手指涂画"),
         FINGER_FOLLOW("手指跟随"),
-        EVENT_PASSTHROUGH("事件透传");
+        EVENT_PASSTHROUGH("事件透传"),
+        STAY_EXPANDED("工具栏常驻");
 
         public final String label;
 

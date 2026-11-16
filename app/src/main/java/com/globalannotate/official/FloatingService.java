@@ -365,9 +365,6 @@ public final class FloatingService extends Service {
             new AnnotationInputService.InputSink() {
                 @Override
                 public void onStylusEvent(MotionEvent event) {
-                    Log.d(TAG, "inputSink event: tool=" + event.getToolType(0)
-                            + " action=" + event.getActionMasked()
-                            + " started=" + started + " exporting=" + exporting);
                     if (!started || exporting) {
                         return;
                     }
@@ -457,9 +454,11 @@ public final class FloatingService extends Service {
                 }
                 return true;
             }
-            if (action == MotionEvent.ACTION_DOWN && expanded && morph != null) {
+            if (action == MotionEvent.ACTION_DOWN && expanded && morph != null
+                    && !stayExpanded()) {
                 // Tapping outside the capsule dismisses it; the tap must not
-                // leak through as an ink stroke.
+                // leak through as an ink stroke. With 「工具栏常驻」 on, the
+                // toolbar stays open and the tap reaches the canvas normally.
                 swallowOutsideGesture = true;
                 // A morph owns the views until it lands. Collapsing mid-flight
                 // cancelled the animator at its current outline and left the
@@ -1721,6 +1720,11 @@ public final class FloatingService extends Service {
                 .getBoolean(SWITCH_KEY_PREFIX + setting.name(), fallback);
     }
 
+    /** 「工具栏常驻」: tapping the canvas must not collapse the capsule. */
+    private boolean stayExpanded() {
+        return switchValue(MoreMenuView.Setting.STAY_EXPANDED);
+    }
+
     /**
      * Flips 「事件透传」. Preferred path: our own root-side gesture monitor
      * (no helper, no LSPosed) via {@link StylusMonitor}. It starts as uid 0,
@@ -1885,7 +1889,6 @@ public final class FloatingService extends Service {
                             }
                             final byte[] bytes = new byte[length];
                             in.readFully(bytes);
-                            Log.d(TAG, "socket event bytes=" + length);
                             deliverMonitorEvent(bytes);
                         }
                     } catch (IOException error) {
@@ -1927,8 +1930,6 @@ public final class FloatingService extends Service {
             parcel.unmarshall(bytes, 0, bytes.length);
             parcel.setDataPosition(0);
             event = MotionEvent.CREATOR.createFromParcel(parcel);
-            Log.d(TAG, "monitor event received: tool=" + event.getToolType(0)
-                    + " action=" + event.getActionMasked());
             final MotionEvent delivered = event;
             mainHandler.post(new Runnable() {
                 @Override

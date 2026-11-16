@@ -230,6 +230,10 @@ public final class FloatingService extends Service {
     private volatile ScreenCaptureSession captureSession;
     /** Root was refused once in this run; do not pay its timeout on every save. */
     private volatile boolean rootCaptureFailed;
+    /** Root gesture-monitor process for stylus passthrough; null when off. */
+    private volatile Process stylusMonitorProcess;
+    /** True while our own root monitor is the active stylus source. */
+    private volatile boolean rootSplitActive;
     /** True only while a MediaProjection frame request is active. */
     private boolean projectionCapturePending;
     /** Delays first-frame capture until the consent activity and system sheet are gone. */
@@ -648,6 +652,10 @@ public final class FloatingService extends Service {
         if (focusPenSystemLink != null) {
             focusPenSystemLink.disable();
         }
+        // Stop our root stylus monitor before the app service disappears;
+        // otherwise it would keep forwarding events to a dead Binder sink.
+        stopRootStylusMonitor();
+        AnnotationInputService.setSplitActive(false);
         final ScreenCaptureSession projection = captureSession;
         captureSession = null;
         if (projection != null) {
@@ -1702,42 +1710,124 @@ public final class FloatingService extends Service {
     }
 
     /**
-     * Asks the helper to flip ROOT_SPLIT (the 「事件透传」 switch). The helper
-     * confirms over the Binder sink with TX_SET_ACTIVE, and only that
-     * confirmation makes the canvas drop finger touches. If no confirmation
-     * arrives, the helper is missing or disabled, so the switch reverts: an
-     * unconditioned disable of the canvas would leave the screen without any
-     * working input.
+     * Flips 「事件透传」. Preferred path: our own root-side gesture monitor
+     * (no helper, no LSPosed) via {@link StylusMonitor}. It starts as uid 0,
+     * binds to AnnotationInputService, and forwards only stylus events; the
+     * canvas then drops finger touches via the existing InputBridge split
+     * state. Falls back to the legacy helper broadcast when root is refused.
      */
     private void requestSplitMode(final boolean enabled) {
-        final Intent intent = new Intent(GestureLaunchReceiver.ACTION_SET_SPLIT_MODE)
-                .putExtra(GestureLaunchReceiver.EXTRA_TOKEN, GestureLaunchReceiver.TOKEN)
-                .putExtra(GestureLaunchReceiver.EXTRA_ENABLED, enabled);
-        try {
-            sendBroadcast(intent);
-        } catch (RuntimeException ignored) {
-            // Broadcast restrictions must not take the overlay down.
-        }
         if (!enabled) {
+            stopRootStylusMonitor();
+            AnnotationInputService.setSplitActive(false);
+            // Let the legacy helper know too, in case it was the active source.
+            final Intent off = new Intent(GestureLaunchReceiver.ACTION_SET_SPLIT_MODE)
+                    .putExtra(GestureLaunchReceiver.EXTRA_TOKEN, GestureLaunchReceiver.TOKEN)
+                    .putExtra(GestureLaunchReceiver.EXTRA_ENABLED, false);
+            try {
+                sendBroadcast(off);
+            } catch (RuntimeException ignored) {
+                // Broadcast restrictions must not take the overlay down.
+            }
             return;
         }
-        mainHandler.postDelayed(new Runnable() {
+
+        // Start the root monitor off the main thread: suCommand probes su and
+        // execs a process, which must never block the UI.
+        final HandlerThread worker = new HandlerThread("ga-split-start");
+        worker.start();
+        new Handler(worker.getLooper()).post(new Runnable() {
             @Override
             public void run() {
-                if (AnnotationInputService.isSplitActive()) {
-                    return;
-                }
-                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                        .putBoolean(SWITCH_KEY_PREFIX
-                                + MoreMenuView.Setting.EVENT_PASSTHROUGH.name(), false)
-                        .apply();
-                if (moreMenu != null) {
-                    moreMenu.setToggle(MoreMenuView.Setting.EVENT_PASSTHROUGH, false);
-                }
-                Toast.makeText(FloatingService.this, R.string.ga_split_needs_helper,
-                        Toast.LENGTH_SHORT).show();
+                final boolean started = startRootStylusMonitor();
+                worker.quitSafely();
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (started) {
+                            AnnotationInputService.setSplitActive(true);
+                            rootSplitActive = true;
+                            return;
+                        }
+                        // Root unavailable: use the legacy helper path, which
+                        // confirms over the Binder sink before going active.
+                        final Intent on = new Intent(
+                                GestureLaunchReceiver.ACTION_SET_SPLIT_MODE)
+                                .putExtra(GestureLaunchReceiver.EXTRA_TOKEN,
+                                        GestureLaunchReceiver.TOKEN)
+                                .putExtra(GestureLaunchReceiver.EXTRA_ENABLED, true);
+                        try {
+                            sendBroadcast(on);
+                        } catch (RuntimeException ignored) {
+                            // Handled by the timeout below.
+                        }
+                        mainHandler.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (AnnotationInputService.isSplitActive()) {
+                                    return;
+                                }
+                                revertSplitSwitch();
+                            }
+                        }, SPLIT_CONFIRM_MS);
+                    }
+                });
             }
-        }, SPLIT_CONFIRM_MS);
+        });
+    }
+
+    /** Reverts the 「事件透传」 switch when no stylus source confirmed. */
+    private void revertSplitSwitch() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putBoolean(SWITCH_KEY_PREFIX
+                        + MoreMenuView.Setting.EVENT_PASSTHROUGH.name(), false)
+                .apply();
+        if (moreMenu != null) {
+            moreMenu.setToggle(MoreMenuView.Setting.EVENT_PASSTHROUGH, false);
+        }
+        Toast.makeText(FloatingService.this, R.string.ga_split_needs_helper,
+                Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * Launches {@link StylusMonitor} as root via app_process. Returns true only
+     * when the process actually started; a later monitor crash is detected by
+     * the process death handler below.
+     */
+    private boolean startRootStylusMonitor() {
+        if (stylusMonitorProcess != null) {
+            return true;
+        }
+        final String apk = getApplicationInfo().sourceDir;
+        // Quote the APK path: installed paths contain no spaces on this ROM,
+        // but a quoted value is correct for any future device.
+        final String command = "CLASSPATH='" + apk + "'"
+                + " /system/bin/app_process64 /system/bin "
+                + StylusMonitor.class.getName();
+        final String[] suCmd = suCommand(command);
+        if (suCmd == null) {
+            Log.w(TAG, "root stylus monitor unavailable: no usable su");
+            return false;
+        }
+        try {
+            final Process process = Runtime.getRuntime().exec(suCmd);
+            drainAndClose(process);
+            stylusMonitorProcess = process;
+            Log.i(TAG, "root stylus monitor started: " + apk);
+            return true;
+        } catch (IOException | SecurityException error) {
+            Log.w(TAG, "root stylus monitor failed to start", error);
+            return false;
+        }
+    }
+
+    private void stopRootStylusMonitor() {
+        rootSplitActive = false;
+        final Process process = stylusMonitorProcess;
+        stylusMonitorProcess = null;
+        if (process != null) {
+            process.destroy();
+        }
     }
 
     /**

@@ -2193,17 +2193,11 @@ public final class FloatingService extends Service {
         pendingExportMode = pdf ? EXPORT_PDF : EXPORT_IMAGE;
         pendingExportInk = ink;
 
-        // Capture the ink before hiding the overlay. The screen itself is
-        // captured only after the overlay windows have disappeared.
-        setOverlayVisible(false);
-        mainHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (exportJob) {
-                    beginRegularExportCapture();
-                }
-            }
-        }, SCREENSHOT_HIDE_MS);
+        // Capture the ink before hiding the overlay. captureWithProjection()
+        // hides the overlay again and waits for the frames to clear, so do not
+        // add a second SCREENSHOT_HIDE_MS delay here: two back-to-back waits
+        // made the toolbar vanish for over half a second on every save.
+        beginRegularExportCapture();
     }
 
     private void beginRegularExportCapture() {
@@ -2336,6 +2330,16 @@ public final class FloatingService extends Service {
         }
         exportCompleting = true;
 
+        // The screen frame is already captured at this point. Bring the
+        // toolbar back immediately instead of waiting for the (slow) PNG
+        // compression and MediaStore write; a 3200x2136 PNG can take 1-2s to
+        // encode, and making the user stare at a hidden overlay for that long
+        // felt like the save had hung. Compression continues on the worker.
+        // exportJob stays true until the write completes so a second save
+        // cannot race the in-flight one (its frame would be dropped by the
+        // exportCompleting guard below).
+        setOverlayVisible(true);
+
         final HandlerThread worker = new HandlerThread("ga-export-write");
         worker.start();
         new Handler(worker.getLooper()).post(new Runnable() {
@@ -2353,7 +2357,6 @@ public final class FloatingService extends Service {
                         worker.quitSafely();
                         exportJob = false;
                         exportCompleting = false;
-                        setOverlayVisible(true);
                         final int message;
                         if (uri == null) {
                             message = R.string.ga_export_failed;

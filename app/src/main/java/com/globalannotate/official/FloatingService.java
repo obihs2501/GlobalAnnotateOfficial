@@ -119,8 +119,13 @@ public final class FloatingService extends Service {
     private static final long PANEL_HIDE_MS = 180L;
     /** Overlay frames to skip before a screenshot, so the hidden views are gone. */
     private static final long SCREENSHOT_HIDE_MS = 260L;
-    /** Root grants can block on a prompt; regular exports fall back quickly. */
-    private static final long ROOT_SCREENSHOT_TIMEOUT_SEC = 2L;
+    /**
+     * Safety budget for a root capture. RAW screencap itself takes ~0.2s, but
+     * the old 2s timeout also covered a slow first-time su grant and the old
+     * PNG path (~3s); killing it mid-write produced ink-only saves. Give the
+     * grant prompt room while still failing over to MediaProjection.
+     */
+    private static final long ROOT_SCREENSHOT_TIMEOUT_SEC = 8L;
     /** The first long capture has no projection fallback for root authorization. */
     private static final long LONG_ROOT_SCREENSHOT_TIMEOUT_SEC = 15L;
     /** A consent dialog that never answers must not leave the overlay hidden. */
@@ -2504,10 +2509,11 @@ public final class FloatingService extends Service {
     }
 
     /**
-     * Root screenshot through {@code su -c screencap -p}. KernelSU may show a
-     * grant prompt the first time, so a watchdog kills the process instead of
-     * leaving the export worker blocked. Returns null when root is refused or
-     * the PNG does not decode; the export then falls back to MediaProjection.
+     * Root screenshot through {@code su -c screencap} (RAW; decoded in Java).
+     * KernelSU may show a grant prompt the first time, so a watchdog kills the
+     * process instead of leaving the export worker blocked. Returns null when
+     * root is refused or the frame is invalid; the export then falls back to
+     * MediaProjection.
      */
     private static Bitmap captureScreenRoot() {
         return captureScreenRoot(ROOT_SCREENSHOT_TIMEOUT_SEC);
@@ -2583,12 +2589,13 @@ public final class FloatingService extends Service {
         final FloatingService service = instance;
         if (service == null) return null;
 
-        // Write the PNG to a file instead of reading it off stdout: through a
-        // pipe some ROMs translate LF->CRLF and corrupt/truncate the PNG bytes.
-        final java.io.File shot = new java.io.File(service.getCacheDir(), "ga-root-shot.png");
-        // chmod guarantees the app process can read the root-owned file even
-        // if the ROM's umask/SELinux would otherwise leave it unreadable.
-        final String command = "screencap -p > " + shot.getAbsolutePath()
+        // Use RAW screencap (no -p): on this device 'screencap -p' spends ~3s
+        // encoding PNG inside the su shell, while raw capture takes ~0.2s.
+        // The raw stream is a 12-byte little-endian header (width, height,
+        // pixel-format) followed by tightly packed RGBA pixels; we decode it
+        // here. Writing to a file (not stdout) also avoids ROM CRLF corruption.
+        final java.io.File shot = new java.io.File(service.getCacheDir(), "ga-root-shot.raw");
+        final String command = "screencap > " + shot.getAbsolutePath()
                 + " && chmod 666 " + shot.getAbsolutePath();
         final String[] suCmd = suCommand(command);
         if (suCmd == null) {
@@ -2598,7 +2605,6 @@ public final class FloatingService extends Service {
 
         Process process = null;
         try {
-            // Remove any stale file from a previous interrupted capture.
             if (shot.exists() && !shot.delete()) {
                 Log.w(TAG, "root screenshot: could not remove stale shot");
             }
@@ -2608,12 +2614,11 @@ public final class FloatingService extends Service {
                 process.destroyForcibly();
                 return null;
             }
-            if (process.exitValue() != 0 || !shot.exists() || shot.length() == 0) {
+            if (process.exitValue() != 0 || !shot.exists() || shot.length() < 12) {
                 return null;
             }
-            final byte[] png = readFileBytes(shot);
-            return png != null && png.length > 0
-                    ? BitmapFactory.decodeByteArray(png, 0, png.length) : null;
+            final byte[] raw = readFileBytes(shot);
+            return decodeRawScreenshot(raw);
         } catch (IOException | InterruptedException | SecurityException error) {
             if (process != null) process.destroyForcibly();
             if (error instanceof InterruptedException) Thread.currentThread().interrupt();
@@ -2622,6 +2627,44 @@ public final class FloatingService extends Service {
         } finally {
             if (shot.exists()) shot.delete();
         }
+    }
+
+    /**
+     * Decodes a {@code screencap} RAW stream: three little-endian ints
+     * (width, height, format) then RGBA_8888 pixels. Anything other than
+     * RGBA_8888 (format 1) is rejected so we never render garbage colours.
+     */
+    private static Bitmap decodeRawScreenshot(byte[] raw) {
+        if (raw == null || raw.length < 12) return null;
+        final int width = le32(raw, 0);
+        final int height = le32(raw, 4);
+        final int format = le32(raw, 8);
+        final int expected = 12 + width * height * 4;
+        if (width <= 0 || height <= 0 || format != 1 || raw.length < expected) {
+            Log.w(TAG, "bad raw screenshot header " + width + "x" + height
+                    + " fmt=" + format + " len=" + raw.length);
+            return null;
+        }
+        // Verified against a same-state PNG on this device: raw bytes are
+        // R,G,B,A (not BGRA). Copy into an int buffer in ARGB order, forcing
+        // alpha opaque.
+        final int[] pixels = new int[width * height];
+        for (int i = 0, p = 12; i < pixels.length; i++, p += 4) {
+            final int r = raw[p] & 0xFF;
+            final int g = raw[p + 1] & 0xFF;
+            final int b = raw[p + 2] & 0xFF;
+            pixels[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+        }
+        final Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+        return bitmap;
+    }
+
+    private static int le32(byte[] data, int offset) {
+        return (data[offset] & 0xFF)
+                | ((data[offset + 1] & 0xFF) << 8)
+                | ((data[offset + 2] & 0xFF) << 16)
+                | ((data[offset + 3] & 0xFF) << 24);
     }
 
     private static byte[] readFileBytes(java.io.File file) {

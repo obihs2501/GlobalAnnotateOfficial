@@ -1,7 +1,5 @@
 package com.globalannotate.official;
 
-import android.app.ActivityThread;
-import android.app.Application;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -12,6 +10,7 @@ import android.os.Looper;
 import android.os.Parcel;
 import android.os.RemoteException;
 import android.util.Log;
+import android.view.InputChannel;
 import android.view.InputDevice;
 import android.view.InputEvent;
 import android.view.InputEventReceiver;
@@ -30,16 +29,15 @@ import android.view.MotionEvent;
  * the pen still draws.</p>
  *
  * <p>Running as uid 0 (via {@code /system/bin/su -c}) satisfies the
- * MONITOR_INPUT check and the app service's ROOT_UID bind check. All framework
- * types are reached by reflection so the app module compiles against the plain
- * SDK and no hidden-API opt-in is needed.</p>
+ * MONITOR_INPUT check and the app service's ROOT_UID bind check. Hidden
+ * framework types are reached reflectively where the SDK lacks them.</p>
  */
 public final class StylusMonitor {
 
     private static final String TAG = "GAStylusMonitor";
     private static final String MONITOR_NAME = "ga-stylus";
 
-    private static Object monitor;          // android.view.InputMonitor
+    private static Object monitor;            // android.view.InputMonitor
     private static InputEventReceiver receiver;
     private static volatile IBinder appSink;
 
@@ -50,8 +48,7 @@ public final class StylusMonitor {
         Log.i(TAG, "starting as uid=" + android.os.Process.myUid());
         Looper.prepareMainLooper();
 
-        final Application app = ActivityThread.systemMain().getSystemContext()
-                .getApplicationContext();
+        final Context app = systemContext();
         if (app == null) {
             Log.e(TAG, "no system context from ActivityThread.systemMain()");
             return;
@@ -88,6 +85,18 @@ public final class StylusMonitor {
         Looper.loop();
     }
 
+    /** ActivityThread.systemMain().getSystemContext() via reflection. */
+    private static Context systemContext() {
+        try {
+            final Class<?> at = Class.forName("android.app.ActivityThread");
+            final Object thread = at.getMethod("systemMain").invoke(null);
+            return (Context) at.getMethod("getSystemContext").invoke(thread);
+        } catch (Throwable error) {
+            Log.e(TAG, "systemContext failed", error);
+            return null;
+        }
+    }
+
     /** Installs the gesture monitor. All hidden framework calls are reflective. */
     private static void startMonitor() {
         if (monitor != null) {
@@ -97,17 +106,12 @@ public final class StylusMonitor {
             // InputManagerGlobal.getInstance().monitorGestureInput(name, displayId)
             final Class<?> imGlobal = Class.forName("android.hardware.input.InputManagerGlobal");
             final Object instance = imGlobal.getMethod("getInstance").invoke(null);
-            final Object created = imGlobal.getMethod("monitorGestureInput",
-                    String.class, int.class).invoke(instance, MONITOR_NAME, 0);
-            monitor = created;
-
-            // InputMonitor.getInputChannel()
+            monitor = imGlobal.getMethod("monitorGestureInput", String.class, int.class)
+                    .invoke(instance, MONITOR_NAME, 0);
             final Object channel = monitor.getClass().getMethod("getInputChannel")
                     .invoke(monitor);
 
-            // InputEventReceiver(InputChannel, Looper) with onInputEvent override.
-            receiver = new InputEventReceiver((android.view.InputChannel) channel,
-                    Looper.myLooper()) {
+            receiver = new InputEventReceiver((InputChannel) channel, Looper.myLooper()) {
                 @Override
                 public void onInputEvent(InputEvent event) {
                     handleEvent(event);

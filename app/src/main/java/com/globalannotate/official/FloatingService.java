@@ -29,6 +29,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.Parcel;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
@@ -50,8 +51,12 @@ import com.globalannotate.official.panels.ColorPanel;
 import com.globalannotate.official.panels.PenGesturePanel;
 
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.LocalServerSocket;
+import java.net.LocalSocket;
+import java.net.LocalSocketAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -234,6 +239,10 @@ public final class FloatingService extends Service {
     private volatile Process stylusMonitorProcess;
     /** True while our own root monitor is the active stylus source. */
     private volatile boolean rootSplitActive;
+    /** Unix socket over which the root monitor sends stylus MotionEvents. */
+    private static final String STYLUS_SOCKET_NAME = "globalannotate.stylus";
+    private volatile Thread stylusSocketThread;
+    private volatile LocalServerSocket stylusServerSocket;
     /** True only while a MediaProjection frame request is active. */
     private boolean projectionCapturePending;
     /** Delays first-frame capture until the consent activity and system sheet are gone. */
@@ -1745,8 +1754,8 @@ public final class FloatingService extends Service {
                     @Override
                     public void run() {
                         if (started) {
-                            AnnotationInputService.setSplitActive(true);
-                            rootSplitActive = true;
+                            // Split goes active when the monitor connects to
+                            // the socket (see startStylusSocketServer).
                             return;
                         }
                         // Root unavailable: use the legacy helper path, which
@@ -1798,6 +1807,12 @@ public final class FloatingService extends Service {
         if (stylusMonitorProcess != null) {
             return true;
         }
+        // The root process has no registered app thread and cannot bind our
+        // service, so it sends stylus events over an abstract socket instead.
+        if (!startStylusSocketServer()) {
+            Log.w(TAG, "root stylus monitor unavailable: socket server failed");
+            return false;
+        }
         final String apk = getApplicationInfo().sourceDir;
         // Quote the APK path: installed paths contain no spaces on this ROM,
         // but a quoted value is correct for any future device.
@@ -1827,6 +1842,104 @@ public final class FloatingService extends Service {
         stylusMonitorProcess = null;
         if (process != null) {
             process.destroy();
+        }
+        stopStylusSocketServer();
+    }
+
+    /** Opens the abstract socket the root monitor sends stylus events to. */
+    private boolean startStylusSocketServer() {
+        if (stylusServerSocket != null) {
+            return true;
+        }
+        try {
+            stylusServerSocket = new LocalServerSocket(STYLUS_SOCKET_NAME);
+        } catch (IOException error) {
+            Log.w(TAG, "cannot open stylus socket", error);
+            return false;
+        }
+        final Thread server = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (stylusServerSocket != null) {
+                    LocalSocket client = null;
+                    try {
+                        client = stylusServerSocket.accept();
+                        // The root monitor is now connected and will soon
+                        // deliver stylus events; make the canvas finger-
+                        // transparent from this point on.
+                        mainHandler.post(new Runnable() {
+                            @Override public void run() {
+                                AnnotationInputService.setSplitActive(true);
+                                rootSplitActive = true;
+                            }
+                        });
+                        final DataInputStream in = new DataInputStream(
+                                client.getInputStream());
+                        while (stylusServerSocket != null) {
+                            final int length = in.readInt();
+                            if (length <= 0 || length > 4 * 1024 * 1024) {
+                                break;
+                            }
+                            final byte[] bytes = new byte[length];
+                            in.readFully(bytes);
+                            deliverMonitorEvent(bytes);
+                        }
+                    } catch (IOException error) {
+                        if (stylusServerSocket != null) {
+                            Log.w(TAG, "stylus socket error", error);
+                        }
+                    } finally {
+                        if (client != null) {
+                            try { client.close(); } catch (IOException ignored) { }
+                        }
+                    }
+                }
+            }
+        }, "ga-stylus-socket");
+        server.setDaemon(true);
+        stylusSocketThread = server;
+        server.start();
+        return true;
+    }
+
+    private void stopStylusSocketServer() {
+        final LocalServerSocket serverSocket = stylusServerSocket;
+        stylusServerSocket = null;
+        if (serverSocket != null) {
+            try { serverSocket.close(); } catch (IOException ignored) { }
+        }
+        final Thread thread = stylusSocketThread;
+        stylusSocketThread = null;
+        if (thread != null) {
+            thread.interrupt();
+        }
+    }
+
+    /** Reconstitutes a MotionEvent from the root monitor and draws it. */
+    private void deliverMonitorEvent(byte[] bytes) {
+        final Parcel parcel = Parcel.obtain();
+        MotionEvent event = null;
+        try {
+            parcel.unmarshall(bytes, 0, bytes.length);
+            parcel.setDataPosition(0);
+            event = MotionEvent.CREATOR.createFromParcel(parcel);
+            final MotionEvent delivered = event;
+            mainHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (!started || exporting) {
+                        delivered.recycle();
+                        return;
+                    }
+                    inputSink.onStylusEvent(delivered);
+                }
+            });
+            event = null; // ownership transferred to the main thread
+        } catch (RuntimeException error) {
+            Log.w(TAG, "bad stylus event from monitor", error);
+        } finally {
+            if (event != null) event.recycle();
+            parcel.recycle();
         }
     }
 

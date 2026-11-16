@@ -10,6 +10,7 @@ import android.graphics.Path;
 import android.graphics.PathEffect;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -157,13 +158,19 @@ public final class AnnotationView extends View {
     private int activePointerId = MotionEvent.INVALID_POINTER_ID;
     /** Whole-stroke eraser (笔画橡皮) instead of the raster eraser stroke. */
     private boolean strokeEraseEnabled;
-    /**
-     * Pixel eraser pressure response, 0..1. Zero keeps a constant-radius
-     * eraser; one uses the full 0.45..1.35 pressure range.
-     */
+    /** Pressure response for raster eraser strokes. */
     private float eraserSensitivity = 0.5f;
+    /** Threshold and base width for automatic whole-stroke erasing while using a pen. */
+    private float pressureEraserSensitivity = 0.5f;
+    private float pressureEraserRadius;
+    private boolean pressureEraserEnabled = true;
     /** In-flight whole-stroke erase gesture; null when not erasing strokes. */
     private Edit activeErase;
+    /** Latched for the current stylus contact after pressure crosses the threshold. */
+    private boolean pressureEraserActive;
+    private boolean currentContactIsStylus;
+    private float activeEraserRadius;
+    private FocusPenGestureDetector focusPenDetector;
 
     public AnnotationView(Context context) {
         super(context);
@@ -227,6 +234,43 @@ public final class AnnotationView extends View {
         if (!enabled) {
             finishActive();
         }
+    }
+
+    public void setAutomaticPressureErase(boolean enabled, float sensitivity, float radius) {
+        pressureEraserEnabled = enabled;
+        pressureEraserSensitivity = Math.max(0f, Math.min(1f, sensitivity));
+        pressureEraserRadius = Math.max(0.5f, radius);
+    }
+
+    public void setFocusPenGestureListener(FocusPenGestureDetector.Listener listener) {
+        if (focusPenDetector != null) {
+            focusPenDetector.reset();
+        }
+        focusPenDetector = listener == null ? null : new FocusPenGestureDetector(listener);
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (focusPenDetector != null && focusPenDetector.onKey(
+                event.getKeyCode(), event.getScanCode(), event.getAction(), event.getRepeatCount())) {
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    public void requestStylusKeyFocus() {
+        setFocusable(true);
+        setFocusableInTouchMode(true);
+        requestFocus();
+    }
+
+    public void clearStylusKeyFocus() {
+        if (focusPenDetector != null) {
+            focusPenDetector.reset();
+        }
+        clearFocus();
+        setFocusable(false);
+        setFocusableInTouchMode(false);
     }
 
     public boolean isStrokeEraseEnabled() {
@@ -418,12 +462,21 @@ public final class AnnotationView extends View {
                 return true;
             }
             activePointerId = event.getPointerId(0);
+            currentContactIsStylus = toolType == MotionEvent.TOOL_TYPE_STYLUS;
+            pressureEraserActive = false;
             if (strokeEraseEnabled && penStyle.eraser) {
-                beginStrokeErase(event, 0);
+                beginStrokeErase(event, 0,
+                        penWidth * widthFactor(Types.PenStyle.ERASER) * 0.5f);
                 invalidate();
                 return true;
             }
-            beginStroke(event, 0);
+            if (shouldStartPressureErase(event.getPressure(0))) {
+                pressureEraserActive = true;
+                redoStack.clear();
+                beginStrokeErase(event, 0, pressureEraserRadius);
+            } else {
+                beginStroke(event, 0);
+            }
             invalidate();
             return true;
         }
@@ -438,22 +491,18 @@ public final class AnnotationView extends View {
             if (index < 0) {
                 return true;
             }
-            if (activeErase != null) {
-                for (int h = 0; h < event.getHistorySize(); h++) {
-                    eraseStrokesAt(event.getHistoricalX(index, h),
-                            event.getHistoricalY(index, h));
-                }
-                eraseStrokesAt(event.getX(index), event.getY(index));
-                invalidate();
-                return true;
-            }
-            if (active == null) {
+            if (active == null && activeErase == null) {
                 return true;
             }
             for (int h = 0; h < event.getHistorySize(); h++) {
-                appendPoint(event, index, h);
+                if (isPressureEraseSample(event, index, h)) {
+                    continue;
+                }
+                processStrokeSample(event, index, h);
             }
-            appendPoint(event, index, -1);
+            if (!isPressureEraseSample(event, index, -1)) {
+                processStrokeSample(event, index, -1);
+            }
             invalidate();
             return true;
         }
@@ -461,12 +510,12 @@ public final class AnnotationView extends View {
         if (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP) {
             final int index = event.getActionIndex();
             if (event.getPointerId(index) == activePointerId) {
-                if (activeErase != null) {
-                    eraseStrokesAt(event.getX(index), event.getY(index));
-                } else {
-                    appendPoint(event, index, -1);
+                if (!isPressureEraseSample(event, index, -1)) {
+                    processStrokeSample(event, index, -1);
                 }
                 finishActive();
+                pressureEraserActive = false;
+                currentContactIsStylus = false;
                 activePointerId = MotionEvent.INVALID_POINTER_ID;
                 invalidate();
             }
@@ -475,6 +524,8 @@ public final class AnnotationView extends View {
 
         if (action == MotionEvent.ACTION_CANCEL) {
             finishActive();
+            pressureEraserActive = false;
+            currentContactIsStylus = false;
             activePointerId = MotionEvent.INVALID_POINTER_ID;
             invalidate();
             return true;
@@ -519,10 +570,76 @@ public final class AnnotationView extends View {
         redoStack.clear();
     }
 
-    private void beginStrokeErase(MotionEvent event, int index) {
+    private void beginStrokeErase(MotionEvent event, int index, float eraserRadius) {
         active = null;
+        activeEraserRadius = Math.max(0.5f, eraserRadius);
         activeErase = Edit.removal(new ArrayList<Stroke>());
         eraseStrokesAt(event.getX(index), event.getY(index));
+    }
+
+    private boolean shouldStartPressureErase(float pressure) {
+        return pressureEraserEnabled && currentContactIsStylus && !penStyle.eraser
+                && !pressureEraserActive && pressure >= pressureEraserSensitivity;
+    }
+
+    private boolean switchToPressureEraseIfNeeded(MotionEvent event, int pointerIndex,
+                                                   int historyIndex) {
+        if (!shouldStartPressureErase(samplePressure(event, pointerIndex, historyIndex))) {
+            return false;
+        }
+        if (active != null) {
+            undoStack.add(Edit.draw(active));
+            active = null;
+        }
+        redoStack.clear();
+        pressureEraserActive = true;
+        final float x = sampleX(event, pointerIndex, historyIndex);
+        final float y = sampleY(event, pointerIndex, historyIndex);
+        activeEraserRadius = pressureEraserRadius;
+        activeErase = Edit.removal(new ArrayList<Stroke>());
+        eraseStrokesAt(x, y);
+        return true;
+    }
+
+    private void appendOrErasePoint(MotionEvent event, int pointerIndex, int historyIndex) {
+        if (activeErase != null) {
+            eraseStrokesAt(sampleX(event, pointerIndex, historyIndex),
+                    sampleY(event, pointerIndex, historyIndex));
+        } else {
+            appendPoint(event, pointerIndex, historyIndex);
+        }
+    }
+
+    private boolean isPressureEraseSample(MotionEvent event, int pointerIndex, int historyIndex) {
+        return activeErase == null
+                && switchToPressureEraseIfNeeded(event, pointerIndex, historyIndex);
+    }
+
+    private void processStrokeSample(MotionEvent event, int pointerIndex, int historyIndex) {
+        if (activeErase == null
+                && switchToPressureEraseIfNeeded(event, pointerIndex, historyIndex)) {
+            return;
+        }
+        appendOrErasePoint(event, pointerIndex, historyIndex);
+    }
+
+    private static boolean hasHistoricalSample(MotionEvent event, int historyIndex) {
+        return historyIndex >= 0 && historyIndex < event.getHistorySize();
+    }
+
+    private static float sampleX(MotionEvent event, int pointerIndex, int historyIndex) {
+        return hasHistoricalSample(event, historyIndex)
+                ? event.getHistoricalX(pointerIndex, historyIndex) : event.getX(pointerIndex);
+    }
+
+    private static float sampleY(MotionEvent event, int pointerIndex, int historyIndex) {
+        return hasHistoricalSample(event, historyIndex)
+                ? event.getHistoricalY(pointerIndex, historyIndex) : event.getY(pointerIndex);
+    }
+
+    private static float samplePressure(MotionEvent event, int pointerIndex, int historyIndex) {
+        return hasHistoricalSample(event, historyIndex)
+                ? event.getHistoricalPressure(pointerIndex, historyIndex) : event.getPressure(pointerIndex);
     }
 
     /**
@@ -534,10 +651,9 @@ public final class AnnotationView extends View {
         if (activeErase == null) {
             return;
         }
-        // The raster eraser draws baseWidth * widthFactor as a diameter, and
-        // FloatingService treats the panel value as a radius.
-        final float eraserRadius =
-                penWidth * widthFactor(Types.PenStyle.ERASER) * 0.5f;
+        // The automatic eraser uses the ERASER brush's configured diameter;
+        // the manually selected eraser keeps the current eraser width.
+        final float eraserRadius = activeEraserRadius;
         for (int i = strokes.size() - 1; i >= 0; i--) {
             final Stroke stroke = strokes.get(i);
             // CLEAR strokes are eraser marks, not ink; they stay in history so
@@ -592,14 +708,9 @@ public final class AnnotationView extends View {
         if (active == null || pointerIndex < 0) {
             return;
         }
-        if (historyIndex >= 0 && historyIndex < event.getHistorySize()) {
-            active.add(event.getHistoricalX(pointerIndex, historyIndex),
-                    event.getHistoricalY(pointerIndex, historyIndex),
-                    event.getHistoricalPressure(pointerIndex, historyIndex));
-        } else {
-            active.add(event.getX(pointerIndex), event.getY(pointerIndex),
-                    event.getPressure(pointerIndex));
-        }
+        active.add(sampleX(event, pointerIndex, historyIndex),
+                sampleY(event, pointerIndex, historyIndex),
+                samplePressure(event, pointerIndex, historyIndex));
     }
 
     private void finishActive() {

@@ -326,9 +326,9 @@ public final class BrushPanel extends LinearLayout {
         final boolean eraser = tool.eraser;
         tabsRow.setVisibility(eraser ? VISIBLE : GONE);
         sizeRow.setVisibility(eraser && value ? GONE : VISIBLE);
-        // Pixel eraser keeps its pressure-trigger rail; only whole-stroke mode
-        // hides it because there is no raster radius to modulate there.
-        sensitivityRow.setVisibility(eraser && value ? GONE : VISIBLE);
+        // Keep the eraser's pressure trigger threshold adjustable in both modes;
+        // the same setting starts whole-stroke erasing while using a pen.
+        sensitivityRow.setVisibility(VISIBLE);
         tipRow.setVisibility(eraser ? GONE : VISIBLE);
         alphaRow.setVisibility(eraser ? GONE : VISIBLE);
         eraserHint.setVisibility(eraser && value ? VISIBLE : GONE);
@@ -560,7 +560,7 @@ public final class BrushPanel extends LinearLayout {
         // The official stroke-erase hint, shown instead of the size content
         // (pk_eraser_stroke_hint, 31dp top / 25dp bottom).
         eraserHint = new TextView(context);
-        eraserHint.setText("笔画橡皮无需调整粗细");
+        eraserHint.setText("按压力阈值，普通笔自动触发笔画橡皮");
         eraserHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, ERASER_HINT_SP);
         eraserHint.setTextColor(eraserHintColor);
         eraserHint.setGravity(Gravity.CENTER);

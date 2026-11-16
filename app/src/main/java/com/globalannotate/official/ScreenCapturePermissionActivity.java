@@ -6,6 +6,8 @@ import android.media.projection.MediaProjectionConfig;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 /**
@@ -22,6 +24,7 @@ import android.util.Log;
 public final class ScreenCapturePermissionActivity extends Activity {
 
     private static final String TAG = "GaScreenPermission";
+    private final Handler resultHandler = new Handler(Looper.getMainLooper());
     private static final int REQUEST_CONSENT = 0x6A02;
 
     private boolean requested;
@@ -64,9 +67,7 @@ public final class ScreenCapturePermissionActivity extends Activity {
     }
 
     private void finishWithCanceledResult() {
-        final Intent result = new Intent(this, FloatingService.class)
-                .setAction(FloatingService.ACTION_CAPTURE_CONSENT_RESULT)
-                .putExtra(FloatingService.EXTRA_CONSENT_RESULT_CODE, Activity.RESULT_CANCELED);
+        final Intent result = consentResult(Activity.RESULT_CANCELED, null);
         try {
             startService(result);
         } catch (RuntimeException error) {
@@ -86,18 +87,29 @@ public final class ScreenCapturePermissionActivity extends Activity {
             finishWithCanceledResult();
             return;
         }
-        final Intent result = new Intent(this, FloatingService.class)
-                .setAction(FloatingService.ACTION_CAPTURE_CONSENT_RESULT)
-                .putExtra(FloatingService.EXTRA_CONSENT_RESULT_CODE, resultCode)
-                .putExtra(FloatingService.EXTRA_CONSENT_DATA, data);
-        try {
-            startService(result);
-        } catch (RuntimeException error) {
-            Log.w(TAG, "cannot deliver consent result", error);
-            finishWithCanceledResult();
-            return;
-        }
+        final Intent result = consentResult(resultCode, data);
         finish();
         overridePendingTransition(0, 0);
+        resultHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    startService(result);
+                } catch (RuntimeException error) {
+                    Log.w(TAG, "cannot deliver consent result", error);
+                    startService(consentResult(Activity.RESULT_CANCELED, null));
+                }
+            }
+        }, 350L);
+    }
+
+    private Intent consentResult(int resultCode, Intent data) {
+        final Intent result = new Intent(this, FloatingService.class)
+                .setAction(FloatingService.ACTION_CAPTURE_CONSENT_RESULT)
+                .putExtra(FloatingService.EXTRA_CONSENT_RESULT_CODE, resultCode);
+        if (data != null) {
+            result.putExtra(FloatingService.EXTRA_CONSENT_DATA, data);
+        }
+        return result;
     }
 }

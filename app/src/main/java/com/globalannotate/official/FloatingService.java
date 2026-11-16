@@ -125,6 +125,8 @@ public final class FloatingService extends Service {
     private static final long LONG_ROOT_SCREENSHOT_TIMEOUT_SEC = 15L;
     /** A consent dialog that never answers must not leave the overlay hidden. */
     private static final long CONSENT_TIMEOUT_MS = 30000L;
+    /** Wait for the consent activity and system overlay to leave SurfaceFlinger. */
+    private static final long PROJECTION_CONSENT_SETTLE_MS = 1200L;
     /** Long screenshot: one imported frame per screen, then a stitched PNG. */
     private static final int MAX_LONG_SCREENS = 12;
     private static final int MAX_LONG_HEIGHT = 12000;
@@ -179,6 +181,7 @@ public final class FloatingService extends Service {
             }
             Log.w(TAG, "screen capture consent timed out");
             captureConsentPending = false;
+            projectionConsentSettling = false;
             pendingExportMode = EXPORT_NONE;
             recycleQuietly(pendingExportInk);
             pendingExportInk = null;
@@ -224,6 +227,10 @@ public final class FloatingService extends Service {
     private volatile boolean rootCaptureFailed;
     /** True only while a MediaProjection frame request is active. */
     private boolean projectionCapturePending;
+    /** Delays first-frame capture until the consent activity and system sheet are gone. */
+    private volatile boolean projectionConsentSettling;
+    private volatile boolean focusPenConnected;
+    private FocusPenSystemLink focusPenSystemLink;
     /** Root swipe process for long screenshot; killed during cancellation. */
     private volatile Process longSwipeProcess;
     /** Reused progress toast, so per-screen updates replace rather than queue. */
@@ -457,6 +464,19 @@ public final class FloatingService extends Service {
         restoreBrushState();
         loadRecentColors();
         createNotificationChannel();
+        focusPenSystemLink = new FocusPenSystemLink(this,
+                new FocusPenSystemLink.Listener() {
+                    @Override
+                    public void onConnectionChanged(boolean connected) {
+                        focusPenConnected = connected;
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                updateFocusPenKeyFocus();
+                            }
+                        });
+                    }
+                });
     }
 
     @Override
@@ -521,6 +541,7 @@ public final class FloatingService extends Service {
         }
         mainHandler.removeCallbacks(consentTimeout);
         captureConsentPending = false;
+        projectionConsentSettling = true;
         final int resultCode = intent != null
                 ? intent.getIntExtra(EXTRA_CONSENT_RESULT_CODE, Activity.RESULT_CANCELED)
                 : Activity.RESULT_CANCELED;
@@ -528,6 +549,7 @@ public final class FloatingService extends Service {
                 ? intent.getParcelableExtra(EXTRA_CONSENT_DATA)
                 : null;
         if (resultCode != Activity.RESULT_OK || resultData == null) {
+            projectionConsentSettling = false;
             captureConsentRefused = true;
             ensureForeground(false);
             finishPendingExport(null);
@@ -535,6 +557,7 @@ public final class FloatingService extends Service {
         }
         if (!ensureForeground(true)) {
             captureConsentPending = false;
+            projectionConsentSettling = false;
             captureConsentRefused = true;
             finishPendingExport(null);
             return;
@@ -569,6 +592,7 @@ public final class FloatingService extends Service {
                     }
                 });
         if (session == null) {
+            projectionConsentSettling = false;
             ensureForeground(false);
             finishPendingExport(null);
             return;
@@ -614,6 +638,9 @@ public final class FloatingService extends Service {
         projectionCapturePending = false;
         cancelLongScreenshotWorker();
         cancelLongProgressToast();
+        if (focusPenSystemLink != null) {
+            focusPenSystemLink.disable();
+        }
         final ScreenCaptureSession projection = captureSession;
         captureSession = null;
         if (projection != null) {
@@ -670,13 +697,21 @@ public final class FloatingService extends Service {
         updateScreenMetrics();
 
         annotationView = new AnnotationView(this);
+        annotationView.setFocusPenGestureListener(new FocusPenGestureDetector.Listener() {
+            @Override
+            public void onGesture(String name) {
+                handleExternalGesture(name);
+            }
+        });
         annotationView.setPenStyle(penStyle);
         annotationView.setPenColor(penColor);
         // Finger drawing defaults on; see switchValue().
         annotationView.setFingerDrawEnabled(switchValue(MoreMenuView.Setting.FINGER_DRAW));
         applyBrushToView();
         annotationView.setOnTouchListener(annotationTouch);
-        if (!addOverlay(annotationView, overlayParams())) {
+        final WindowManager.LayoutParams canvasParams = overlayParams();
+        canvasParams.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+        if (!addOverlay(annotationView, canvasParams)) {
             return false;
         }
 
@@ -759,6 +794,8 @@ public final class FloatingService extends Service {
         // what turns the previously dropped events into ink strokes.
         AnnotationInputService.setFloatingService(this);
         AnnotationInputService.setInputSink(inputSink);
+        focusPenSystemLink.enable();
+        updateFocusPenKeyFocus();
         // The helper only binds its Binder sink after SET_MODULE_ENABLED. The
         // overlay can also be started from MainActivity / the notification,
         // which do not pass through GestureLaunchReceiver.startOverlay(), so
@@ -1001,6 +1038,35 @@ public final class FloatingService extends Service {
                     handleDragEnd(rawX, rawY);
                 }
             };
+
+    private void updateFocusPenKeyFocus() {
+        if (annotationView == null) {
+            return;
+        }
+        final boolean wanted = focusPenConnected && started && !exporting;
+        final ViewGroup.LayoutParams raw = annotationView.getLayoutParams();
+        if (raw instanceof WindowManager.LayoutParams) {
+            final WindowManager.LayoutParams lp = (WindowManager.LayoutParams) raw;
+            final int oldFlags = lp.flags;
+            if (wanted) {
+                lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            } else {
+                lp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            }
+            if (lp.flags != oldFlags) {
+                try {
+                    windowManager.updateViewLayout(annotationView, lp);
+                } catch (RuntimeException ignored) {
+                    // The canvas may have been detached during service shutdown.
+                }
+            }
+        }
+        if (wanted) {
+            annotationView.requestStylusKeyFocus();
+        } else {
+            annotationView.clearStylusKeyFocus();
+        }
+    }
 
     private void refreshCapsule() {
         if (host == null || annotationView == null) {
@@ -1348,6 +1414,7 @@ public final class FloatingService extends Service {
         if (paletteHost != null) {
             removeOverlay(paletteHost);
         }
+        updateFocusPenKeyFocus();
     }
 
     /** Per-tool colours for the arc; every pen keeps its own like Mi Canvas. */
@@ -2194,7 +2261,15 @@ public final class FloatingService extends Service {
         }
         projectionCapturePending = true;
         setOverlayVisible(false);
-        session.capture(screenW, screenH, getResources().getDisplayMetrics().densityDpi,
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!exportJob || !projectionCapturePending
+                        || pendingExportMode != mode || captureSession != session) {
+                    return;
+                }
+                session.capture(screenW, screenH,
+                        getResources().getDisplayMetrics().densityDpi,
                 new Runnable() {
                     @Override
                     public void run() {
@@ -2220,6 +2295,9 @@ public final class FloatingService extends Service {
                         finishPendingExport(null);
                     }
                 });
+            }
+        }, projectionConsentSettling ? PROJECTION_CONSENT_SETTLE_MS : SCREENSHOT_HIDE_MS);
+        projectionConsentSettling = false;
     }
 
     /** Moves the pending export into a worker that writes MediaStore. */
@@ -2308,6 +2386,7 @@ public final class FloatingService extends Service {
         // When ROOT_SPLIT is on, the canvas also stays untouchable: the pen
         // arrives through the Binder sink and fingers belong to the app below.
         setWindowTouchable(annotationView, visible && !AnnotationInputService.isSplitActive());
+        updateFocusPenKeyFocus();
         setWindowTouchable(proxy, visible);
         if (host != null) {
             setWindowTouchable(host, visible);
@@ -2616,6 +2695,7 @@ public final class FloatingService extends Service {
         openPanelHost = null;
         hidePanels();
         persistPanelStateNow();
+        updateFocusPenKeyFocus();
         final int token = ++panelDismissToken;
         mainHandler.postDelayed(new Runnable() {
             @Override
@@ -2726,6 +2806,9 @@ public final class FloatingService extends Service {
         if (annotationView.isStrokeEraseEnabled() != wholeStroke) {
             annotationView.setStrokeEraseEnabled(wholeStroke);
         }
+        final BrushSettings eraserSettings = settingsFor(Types.PenStyle.ERASER);
+        annotationView.setAutomaticPressureErase(true, eraserSettings.sensitivity,
+                eraserSettings.width * density);
     }
 
     private BrushSettings settingsFor(Types.PenStyle style) {

@@ -45,13 +45,16 @@ public final class StylusMonitor {
 
     public static void main(String[] args) {
         Log.i(TAG, "starting as uid=" + android.os.Process.myUid());
+        diag("main uid=" + android.os.Process.myUid());
         Looper.prepareMainLooper();
 
         final Context app = systemContext();
         if (app == null) {
             Log.e(TAG, "no system context from ActivityThread.systemMain()");
+            diag("no system context");
             return;
         }
+        diag("got context " + app);
 
         final ServiceConnection connection = new ServiceConnection() {
             @Override
@@ -72,16 +75,30 @@ public final class StylusMonitor {
                 "com.globalannotate.official",
                 "com.globalannotate.official.AnnotationInputService"));
         try {
-            if (!app.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
-                Log.e(TAG, "bindService returned false");
-                return;
-            }
+            diag("bindService -> " + app.bindService(intent, connection,
+                    Context.BIND_AUTO_CREATE));
         } catch (RuntimeException error) {
             Log.e(TAG, "bindService failed", error);
+            diag("bindService threw " + error);
             return;
         }
 
+        diag("entering looper");
         Looper.loop();
+        diag("looper exited");
+    }
+
+    /** Writes a plain-text trace where adb can read it without logcat tags. */
+    private static void diag(String message) {
+        try {
+            java.io.FileOutputStream out = new java.io.FileOutputStream(
+                    "/data/local/tmp/ga-monitor-diag.txt", true);
+            out.write((System.currentTimeMillis() + " " + message + "\n")
+                    .getBytes("UTF-8"));
+            out.close();
+        } catch (Throwable ignored) {
+            // Diagnostics are best effort.
+        }
     }
 
     /** ActivityThread.systemMain().getSystemContext() via reflection. */
@@ -117,8 +134,10 @@ public final class StylusMonitor {
                 }
             };
             Log.i(TAG, "gesture monitor installed");
+            diag("gesture monitor installed");
         } catch (Throwable error) {
             Log.e(TAG, "cannot install gesture monitor", error);
+            diag("startMonitor failed: " + error);
         }
     }
 
